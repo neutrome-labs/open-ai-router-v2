@@ -18,23 +18,32 @@ func (*Posthog) Before(params string, p *service.ProviderImpl, r *http.Request, 
 }
 
 func (*Posthog) After(params string, p *service.ProviderImpl, r *http.Request, body []byte, hres *http.Response, res map[string]any) (map[string]any, error) {
-	if res["object"] != "chat.completion" {
-		// todo: streaming support
+	if res != nil && res["object"] == "chat.completion.chunk" && res["usage"] == nil {
 		return res, nil
 	}
 
 	traceId := r.Context().Value("trace_id").(string)
-	userId := r.Context().Value("user_id").(string)
 	startTime := r.Context().Value("posthog_time_start").(time.Time)
-
-	usageData, ok := res["usage"]
-	if !ok {
-		usageData = map[string]any{}
+	userIdPtr := r.Context().Value("user_id")
+	userId := ""
+	if userIdPtr != nil {
+		userId = userIdPtr.(string)
 	}
 
 	var req map[string]any
 	if err := json.Unmarshal(body, &req); err != nil {
 		return res, nil
+	}
+
+	isError := false
+	if res == nil {
+		res = map[string]any{}
+		isError = true
+	}
+
+	usageData, ok := res["usage"]
+	if !ok {
+		usageData = map[string]any{}
 	}
 
 	_ = service.FireObservabilityEvent(userId, "", "$ai_generation", map[string]any{
@@ -49,7 +58,7 @@ func (*Posthog) After(params string, p *service.ProviderImpl, r *http.Request, b
 		"$ai_http_status":    hres.StatusCode,
 		"$ai_base_url":       p.ParsedURL.String(),
 		"$ai_request_url":    r.URL.String(),
-		"$ai_is_error":       false,
+		"$ai_is_error":       isError,
 		"$ai_temperature":    req["temperature"],
 		"$ai_stream":         req["stream"],
 		"$ai_max_tokens":     req["max_tokens"],
