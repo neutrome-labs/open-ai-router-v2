@@ -72,7 +72,7 @@ func (m *EnvAuthManagerModule) ServeHTTP(w http.ResponseWriter, r *http.Request,
 	return next.ServeHTTP(w, r)
 }
 
-func (m *EnvAuthManagerModule) CollectTargetAuth(p *service.ProviderImpl, r *http.Request) (string, error) {
+func (m *EnvAuthManagerModule) CollectTargetAuth(scope string, p *service.ProviderImpl, r *http.Request) (string, error) {
 	key := os.Getenv(strings.ToUpper(p.Name) + "_KEY")
 	if key == "" {
 		m.logger.Warn("no key found in environment variables for provider", zap.String("provider", p.Name))

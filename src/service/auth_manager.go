@@ -5,5 +5,5 @@ import (
 )
 
 type AuthManager interface {
-	CollectTargetAuth(p *ProviderImpl, r *http.Request) (string, error)
+	CollectTargetAuth(scope string, p *ProviderImpl, r *http.Request) (string, error)
 }

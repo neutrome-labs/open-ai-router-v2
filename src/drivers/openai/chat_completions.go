@@ -41,7 +41,7 @@ func (c *ChatCompletions) createChatCompletionsRequest(p *service.ProviderImpl, 
 	// Propagate the original request context for cancellation/timeouts
 	req = req.WithContext(r.Context())
 
-	authVal, err := p.Router.AuthManager.CollectTargetAuth(p, req)
+	authVal, err := p.Router.AuthManager.CollectTargetAuth("chat_completions", p, req)
 	if err != nil {
 		return nil, err
 	}
