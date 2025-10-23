@@ -2,6 +2,7 @@ package modules
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httputil"
@@ -12,7 +13,6 @@ import (
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/google/uuid"
 	"github.com/neutrome-labs/open-ai-router-v2/src/commands"
-	"github.com/neutrome-labs/open-ai-router-v2/src/formats"
 	ccp "github.com/neutrome-labs/open-ai-router-v2/src/modules/chat_completions_plugins"
 	"go.uber.org/zap"
 )
@@ -54,15 +54,15 @@ func (*ChatCompletionsModule) CaddyModule() caddy.ModuleInfo {
 
 func (m *ChatCompletionsModule) Provision(ctx caddy.Context) error {
 	m.plugins = map[string]ccp.ChatCompletionsPlugin{
-		"posthog": &ccp.Posthog{},  // observability
-		"models":  &ccp.Models{},   // model name mapping
-		"fuzz":    &ccp.Fuzz{},     // fuzzy search for model name
+		"posthog": &ccp.Posthog{}, // observability
+		"models":  &ccp.Models{},  // model name mapping
+		/*"fuzz":    &ccp.Fuzz{},     // fuzzy search for model name
 		"zip":     &ccp.Zip{},      // zip(max_context_len)
 		"zipc":    &ccp.Zip{},      // zip with caption (preserve first)
 		"zips":    &ccp.Zip{},      // zip with summary (summarize + last2)
 		"ai18n":   &ccp.AI18n{},    // auto-translate input and output to/from english
 		"optim":   &ccp.Optimize{}, // optimize first prompt for model
-		"tstls":   &ccp.TSTools{},  // tool calls in a mcp->.ts way
+		"tstls":   &ccp.TSTools{},  // tool calls in a mcp->.ts way*/
 	}
 	m.mandatoryPlugins = [][2]string{
 		{"posthog", ""},
@@ -78,7 +78,7 @@ func (m *ChatCompletionsModule) resolvePlugins(r *http.Request) [][2]string {
 	return append(m.mandatoryPlugins, make([][2]string, 0)...)
 }
 
-func (m *ChatCompletionsModule) serveChatCompletions(p *ProviderDef, cmd commands.ChatCompletionsCommand, req *formats.ChatCompletionsRequest, plugins [][2]string, w http.ResponseWriter, r *http.Request) error {
+func (m *ChatCompletionsModule) serveChatCompletions(p *ProviderDef, cmd commands.ChatCompletionsCommand, req map[string]any, plugins [][2]string, w http.ResponseWriter, r *http.Request) error {
 	hres, res, err := cmd.DoChatCompletions(&p.impl, req, r)
 	if err != nil {
 		m.logger.Error("chat completions error", zap.String("provider", p.Name), zap.Error(err))
@@ -87,14 +87,14 @@ func (m *ChatCompletionsModule) serveChatCompletions(p *ProviderDef, cmd command
 
 	for _, plugin := range plugins {
 		pluginImpl, _ := m.plugins[plugin[0]]
-		if err := pluginImpl.After(plugin[1], &p.impl, r, req, hres, &res); err != nil {
+		if err := pluginImpl.After(plugin[1], &p.impl, r, req, hres, res); err != nil {
 			m.logger.Error("plugin after hook error", zap.String("name", plugin[0]), zap.Error(err))
 			http.Error(w, "plugin after hook error: "+plugin[0], http.StatusInternalServerError)
 			return nil
 		}
 	}
 
-	data, err := res.ToJson()
+	data, err := json.Marshal(res)
 	if err != nil {
 		m.logger.Error("chat completions error", zap.String("provider", p.Name), zap.Error(err))
 		return err
@@ -109,7 +109,7 @@ func (m *ChatCompletionsModule) serveChatCompletions(p *ProviderDef, cmd command
 	return nil
 }
 
-func (m *ChatCompletionsModule) serveChatCompletionsStream(p *ProviderDef, cmd commands.ChatCompletionsCommand, req *formats.ChatCompletionsRequest, plugins [][2]string, w http.ResponseWriter, r *http.Request) error {
+func (m *ChatCompletionsModule) serveChatCompletionsStream(p *ProviderDef, cmd commands.ChatCompletionsCommand, req map[string]any, plugins [][2]string, w http.ResponseWriter, r *http.Request) error {
 	flusher, _ := w.(http.Flusher)
 
 	hdr := w.Header()
@@ -144,7 +144,7 @@ func (m *ChatCompletionsModule) serveChatCompletionsStream(p *ProviderDef, cmd c
 			return nil
 		}
 
-		data, err := chunk.ToJson()
+		data, err := json.Marshal(chunk.Data)
 		if err != nil {
 			m.logger.Error("chat completions stream error", zap.String("provider", p.Name), zap.Error(err))
 			_, _ = w.Write([]byte("data: {\"error\":\"marshal failed\"}\n\n"))
@@ -187,12 +187,15 @@ func (m *ChatCompletionsModule) ServeHTTP(w http.ResponseWriter, r *http.Request
 		return nil
 	}
 
-	req := formats.ChatCompletionsRequest{}
-	if err := req.FromJson(reqBody); err != nil {
+	var reqJson map[string]any
+	err = json.Unmarshal(reqBody, &reqJson)
+	if err != nil {
 		m.logger.Error("failed to parse request body", zap.Error(err))
 		http.Error(w, "failed to parse request body", http.StatusBadRequest)
 		return nil
 	}
+
+	// todo: validate required fields: model, messages
 
 	router, ok := GetRouter(m.RouterName)
 	if !ok {
@@ -202,7 +205,7 @@ func (m *ChatCompletionsModule) ServeHTTP(w http.ResponseWriter, r *http.Request
 	}
 
 	plugins := m.resolvePlugins(r)
-	providers, model := router.ResolveProvidersOrderAndModel(req.Model)
+	providers, model := router.ResolveProvidersOrderAndModel(reqJson["model"].(string))
 
 	traceId := uuid.New().String()
 	r = r.WithContext(context.WithValue(r.Context(), "trace_id", traceId))
@@ -224,7 +227,7 @@ func (m *ChatCompletionsModule) ServeHTTP(w http.ResponseWriter, r *http.Request
 			continue
 		}
 
-		xreq := req
+		xreq := reqJson
 
 		for _, plugin := range plugins {
 			pluginImpl, ok := m.plugins[plugin[0]]
@@ -234,15 +237,15 @@ func (m *ChatCompletionsModule) ServeHTTP(w http.ResponseWriter, r *http.Request
 				return nil
 			}
 
-			if err := pluginImpl.Before(plugin[1], &p.impl, r, &xreq); err != nil {
+			if err := pluginImpl.Before(plugin[1], &p.impl, r, xreq); err != nil {
 				m.logger.Error("plugin before hook error", zap.String("name", plugin[0]), zap.Error(err))
 				http.Error(w, "plugin before hook error: "+plugin[0], http.StatusInternalServerError)
 				return nil
 			}
 		}
 
-		if xreq.Stream {
-			err = m.serveChatCompletionsStream(p, cmd, &xreq, plugins, w, r)
+		if xreq["stream"] == true {
+			err = m.serveChatCompletionsStream(p, cmd, xreq, plugins, w, r)
 			if err != nil {
 				if displayErr == nil {
 					displayErr = err
@@ -250,7 +253,7 @@ func (m *ChatCompletionsModule) ServeHTTP(w http.ResponseWriter, r *http.Request
 				continue
 			}
 		} else {
-			err = m.serveChatCompletions(p, cmd, &xreq, plugins, w, r)
+			err = m.serveChatCompletions(p, cmd, xreq, plugins, w, r)
 			if err != nil {
 				if displayErr == nil {
 					displayErr = err

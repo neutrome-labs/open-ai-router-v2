@@ -3,31 +3,32 @@ package openai
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 
-	"github.com/neutrome-labs/open-ai-router-v2/src/formats"
+	"github.com/neutrome-labs/open-ai-router-v2/src/commands"
 	"github.com/neutrome-labs/open-ai-router-v2/src/service"
 )
 
 type ChatCompletions struct {
 }
 
-func (c *ChatCompletions) createChatCompletionsRequest(p *service.ProviderImpl, data *formats.ChatCompletionsRequest, r *http.Request) (*http.Request, error) {
+func (c *ChatCompletions) createChatCompletionsRequest(p *service.ProviderImpl, data map[string]any, r *http.Request) (*http.Request, error) {
 	targetUrl := p.ParsedURL
 	targetUrl.Path += "/chat/completions"
 
 	targetHeader := r.Header.Clone()
 	targetHeader.Del("Accept-Encoding")
 	targetHeader.Set("Content-Type", "application/json")
-	if data != nil && data.Stream {
+	if data != nil && data["stream"] == true {
 		// Hint the origin we expect an event-stream when streaming
 		targetHeader.Set("Accept", "text/event-stream")
 	}
 
-	body, err := data.ToJson()
+	body, err := json.Marshal(data)
 	if err != nil {
 		return nil, err
 	}
@@ -52,25 +53,25 @@ func (c *ChatCompletions) createChatCompletionsRequest(p *service.ProviderImpl, 
 	return req, nil
 }
 
-func (c *ChatCompletions) DoChatCompletions(p *service.ProviderImpl, data *formats.ChatCompletionsRequest, r *http.Request) (*http.Response, formats.ChatCompletionsResponse, error) {
+func (c *ChatCompletions) DoChatCompletions(p *service.ProviderImpl, data map[string]any, r *http.Request) (*http.Response, map[string]any, error) {
 	req, err := c.createChatCompletionsRequest(p, data, r)
 	if err != nil {
-		return nil, formats.ChatCompletionsResponse{}, err
+		return nil, nil, err
 	}
 
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, formats.ChatCompletionsResponse{}, err
+		return nil, nil, err
 	}
 	defer res.Body.Close()
 
 	var respData []byte
 	respData, _ = io.ReadAll(res.Body)
 
-	result := formats.ChatCompletionsResponse{}
+	var result map[string]any
 	switch res.StatusCode {
 	case 200:
-		err = result.FromJson(respData)
+		err = json.Unmarshal(respData, &result)
 	// todo: retry on 4xx without Bearer eg. strings.Replace(authVal, "Bearer ", "", 1)
 	default:
 		err = fmt.Errorf("%s", string(respData))
@@ -79,7 +80,7 @@ func (c *ChatCompletions) DoChatCompletions(p *service.ProviderImpl, data *forma
 	return res, result, err
 }
 
-func (c *ChatCompletions) DoChatCompletionsStream(p *service.ProviderImpl, data *formats.ChatCompletionsRequest, r *http.Request) (*http.Response, chan formats.ChatCompletionsStreamResponseChunk, error) {
+func (c *ChatCompletions) DoChatCompletionsStream(p *service.ProviderImpl, data map[string]any, r *http.Request) (*http.Response, chan commands.ChatCompletionsStreamResponseChunk, error) {
 	req, err := c.createChatCompletionsRequest(p, data, r)
 	if err != nil {
 		return nil, nil, err
@@ -90,7 +91,7 @@ func (c *ChatCompletions) DoChatCompletionsStream(p *service.ProviderImpl, data 
 		return nil, nil, err
 	}
 
-	chunks := make(chan formats.ChatCompletionsStreamResponseChunk)
+	chunks := make(chan commands.ChatCompletionsStreamResponseChunk)
 
 	go func() {
 		defer close(chunks)
@@ -99,7 +100,7 @@ func (c *ChatCompletions) DoChatCompletionsStream(p *service.ProviderImpl, data 
 		if res.StatusCode != http.StatusOK {
 			// Non-200 responses are not streamed; read the body once and emit as error
 			respData, _ := io.ReadAll(res.Body)
-			chunks <- formats.ChatCompletionsStreamResponseChunk{
+			chunks <- commands.ChatCompletionsStreamResponseChunk{
 				RuntimeError: fmt.Errorf("%s - %s", res.Status, string(respData)),
 			}
 			return
@@ -107,21 +108,21 @@ func (c *ChatCompletions) DoChatCompletionsStream(p *service.ProviderImpl, data 
 
 		// Prefer SSE parsing when content-type indicates event-stream or when request asked for streaming
 		ct := res.Header.Get("Content-Type")
-		isSSE := strings.HasPrefix(strings.ToLower(ct), "text/event-stream") || data.Stream
+		isSSE := strings.HasPrefix(strings.ToLower(ct), "text/event-stream") || data["stream"] == true
 
 		if !isSSE {
 			// Fallback: not an SSE response; read once and try to parse as a single chunk
 			respData, err := io.ReadAll(res.Body)
 			if err != nil {
-				chunks <- formats.ChatCompletionsStreamResponseChunk{RuntimeError: err}
+				chunks <- commands.ChatCompletionsStreamResponseChunk{RuntimeError: err}
 				return
 			}
-			var chunk formats.ChatCompletionsStreamResponseChunk
-			if err := chunk.FromJson(respData); err != nil {
-				chunks <- formats.ChatCompletionsStreamResponseChunk{RuntimeError: err}
+			var respJson map[string]any
+			if err := json.Unmarshal(respData, &respJson); err != nil {
+				chunks <- commands.ChatCompletionsStreamResponseChunk{RuntimeError: err}
 				return
 			}
-			chunks <- chunk
+			chunks <- commands.ChatCompletionsStreamResponseChunk{Data: respJson}
 			return
 		}
 
@@ -140,12 +141,12 @@ func (c *ChatCompletions) DoChatCompletionsStream(p *service.ProviderImpl, data 
 			if payload == "[DONE]" {
 				return false
 			}
-			var chunk formats.ChatCompletionsStreamResponseChunk
-			if err := chunk.FromJson([]byte(payload)); err != nil {
-				chunks <- formats.ChatCompletionsStreamResponseChunk{RuntimeError: err}
+			var respJson map[string]any
+			if err := json.Unmarshal([]byte(payload), &respJson); err != nil {
+				chunks <- commands.ChatCompletionsStreamResponseChunk{RuntimeError: err}
 				return false
 			}
-			chunks <- chunk
+			chunks <- commands.ChatCompletionsStreamResponseChunk{Data: respJson}
 			return true
 		}
 
@@ -192,7 +193,7 @@ func (c *ChatCompletions) DoChatCompletionsStream(p *service.ProviderImpl, data 
 		}
 
 		if err := scanner.Err(); err != nil && err != io.EOF {
-			chunks <- formats.ChatCompletionsStreamResponseChunk{RuntimeError: err}
+			chunks <- commands.ChatCompletionsStreamResponseChunk{RuntimeError: err}
 			return
 		}
 	}()
