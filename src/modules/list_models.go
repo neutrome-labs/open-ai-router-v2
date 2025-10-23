@@ -35,7 +35,7 @@ func ParseListModelsModule(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler,
 	return &m, nil
 }
 
-func (ListModelsModule) CaddyModule() caddy.ModuleInfo {
+func (*ListModelsModule) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
 		ID:  "http.handlers.ai_list_models",
 		New: func() caddy.Module { return new(ListModelsModule) },

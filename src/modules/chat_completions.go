@@ -1,6 +1,7 @@
 package modules
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httputil"
@@ -9,6 +10,7 @@ import (
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+	"github.com/google/uuid"
 	"github.com/neutrome-labs/open-ai-router-v2/src/commands"
 	"github.com/neutrome-labs/open-ai-router-v2/src/formats"
 	ccp "github.com/neutrome-labs/open-ai-router-v2/src/modules/chat_completions_plugins"
@@ -17,8 +19,9 @@ import (
 
 // ChatCompletionsModule serves chat completions under any path.
 type ChatCompletionsModule struct {
-	RouterName string `json:"router,omitempty"`
-	plugins    map[string]ccp.ChatCompletionsPlugin
+	RouterName       string `json:"router,omitempty"`
+	plugins          map[string]ccp.ChatCompletionsPlugin
+	mandatoryPlugins [][2]string
 
 	proxy  *httputil.ReverseProxy
 	logger *zap.Logger
@@ -42,7 +45,7 @@ func ParseChatCompletionsModule(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHan
 	return &m, nil
 }
 
-func (ChatCompletionsModule) CaddyModule() caddy.ModuleInfo {
+func (*ChatCompletionsModule) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
 		ID:  "http.handlers.ai_chat_completions",
 		New: func() caddy.Module { return new(ChatCompletionsModule) },
@@ -51,12 +54,19 @@ func (ChatCompletionsModule) CaddyModule() caddy.ModuleInfo {
 
 func (m *ChatCompletionsModule) Provision(ctx caddy.Context) error {
 	m.plugins = map[string]ccp.ChatCompletionsPlugin{
-		"fuzz": &ccp.Fuzz{}, // fuzzy search for model name
-		"zip":  &ccp.Zip{},  // zip(max_context_len)
-		"zipc": &ccp.Zip{},  // zip with caption (preserve first)
-		"zips": &ccp.Zip{},  // zip with summary (summarize + last2)
-		// "ai18n": &chatcompletionsplugins.Ai18n{}, // auto-translate input and output to/from english
-		// "optimize": &chatcompletionsplugins.Optimize{}, // optimize first prompt for model
+		"posthog": &ccp.Posthog{},  // observability
+		"models":  &ccp.Models{},   // model name mapping
+		"fuzz":    &ccp.Fuzz{},     // fuzzy search for model name
+		"zip":     &ccp.Zip{},      // zip(max_context_len)
+		"zipc":    &ccp.Zip{},      // zip with caption (preserve first)
+		"zips":    &ccp.Zip{},      // zip with summary (summarize + last2)
+		"ai18n":   &ccp.AI18n{},    // auto-translate input and output to/from english
+		"optim":   &ccp.Optimize{}, // optimize first prompt for model
+		"tstls":   &ccp.TSTools{},  // tool calls in a mcp->.ts way
+	}
+	m.mandatoryPlugins = [][2]string{
+		{"posthog", ""},
+		{"models", ""},
 	}
 
 	m.proxy = httputil.NewSingleHostReverseProxy(&url.URL{})
@@ -65,11 +75,11 @@ func (m *ChatCompletionsModule) Provision(ctx caddy.Context) error {
 }
 
 func (m *ChatCompletionsModule) resolvePlugins(r *http.Request) [][2]string {
-	return nil
+	return append(m.mandatoryPlugins, make([][2]string, 0)...)
 }
 
 func (m *ChatCompletionsModule) serveChatCompletions(p *ProviderDef, cmd commands.ChatCompletionsCommand, req *formats.ChatCompletionsRequest, plugins [][2]string, w http.ResponseWriter, r *http.Request) error {
-	res, err := cmd.DoChatCompletions(&p.impl, req, r)
+	hres, res, err := cmd.DoChatCompletions(&p.impl, req, r)
 	if err != nil {
 		m.logger.Error("chat completions error", zap.String("provider", p.Name), zap.Error(err))
 		return err
@@ -77,7 +87,7 @@ func (m *ChatCompletionsModule) serveChatCompletions(p *ProviderDef, cmd command
 
 	for _, plugin := range plugins {
 		pluginImpl, _ := m.plugins[plugin[0]]
-		if err := pluginImpl.After(plugin[1], &p.impl, req, &res); err != nil {
+		if err := pluginImpl.After(plugin[1], &p.impl, r, req, hres, &res); err != nil {
 			m.logger.Error("plugin after hook error", zap.String("name", plugin[0]), zap.Error(err))
 			http.Error(w, "plugin after hook error: "+plugin[0], http.StatusInternalServerError)
 			return nil
@@ -114,7 +124,7 @@ func (m *ChatCompletionsModule) serveChatCompletionsStream(p *ProviderDef, cmd c
 		flusher.Flush()
 	}
 
-	stream, err := cmd.DoChatCompletionsStream(&p.impl, req, r)
+	_, stream, err := cmd.DoChatCompletionsStream(&p.impl, req, r)
 	if err != nil {
 		m.logger.Error("chat completions stream error (start)", zap.String("provider", p.Name), zap.Error(err))
 		_, _ = w.Write([]byte("data: {\"error\":\"start failed\"}\n\n"))
@@ -194,6 +204,9 @@ func (m *ChatCompletionsModule) ServeHTTP(w http.ResponseWriter, r *http.Request
 	plugins := m.resolvePlugins(r)
 	providers, model := router.ResolveProvidersOrderAndModel(req.Model)
 
+	traceId := uuid.New().String()
+	r = r.WithContext(context.WithValue(r.Context(), "trace_id", traceId))
+
 	var displayErr error
 	for _, name := range providers {
 		p, ok := router.Providers[name]
@@ -221,7 +234,7 @@ func (m *ChatCompletionsModule) ServeHTTP(w http.ResponseWriter, r *http.Request
 				return nil
 			}
 
-			if err := pluginImpl.Before(plugin[1], &p.impl, &xreq); err != nil {
+			if err := pluginImpl.Before(plugin[1], &p.impl, r, &xreq); err != nil {
 				m.logger.Error("plugin before hook error", zap.String("name", plugin[0]), zap.Error(err))
 				http.Error(w, "plugin before hook error: "+plugin[0], http.StatusInternalServerError)
 				return nil
@@ -245,6 +258,8 @@ func (m *ChatCompletionsModule) ServeHTTP(w http.ResponseWriter, r *http.Request
 				continue
 			}
 		}
+
+		break
 	}
 
 	if displayErr != nil {

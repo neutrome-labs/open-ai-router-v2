@@ -26,7 +26,7 @@ func (c *ListModels) DoListModels(p *service.ProviderImpl, r *http.Request) ([]c
 		Header: targetHeader,
 	}
 
-	authVal, err := p.Router.AuthManager.CollectTargetAuth("list_models", p, req)
+	authVal, err := p.Router.AuthManager.CollectTargetAuth("list_models", p, r, req)
 	if err != nil {
 		return nil, err
 	}

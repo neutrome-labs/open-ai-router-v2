@@ -11,17 +11,36 @@ type ChatCompletionsRequest struct {
 }
 
 type SimpleChatMessage struct {
-	Role    string `json:"role,omitempty"`
-	Content string `json:"content,omitempty"`
+	Role       string     `json:"role,omitempty"`
+	Name       string     `json:"name,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Content    string     `json:"content,omitempty"`
+	Refusal    string     `json:"refusal,omitempty"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 }
 
 type MultimodalChatMessage struct {
 	Role    string `json:"role,omitempty"`
 	Content []struct {
-		Type     string `json:"type,omitempty"`
-		Text     string `json:"text,omitempty"`
-		ImageURL string `json:"image_url,omitempty"`
+		Type       string `json:"type,omitempty"`
+		Text       string `json:"text,omitempty"`
+		ImageURL   string `json:"image_url,omitempty"`
+		InputAudio string `json:"input_audio,omitempty"`
+		File       string `json:"file,omitempty"`
+		Refusal    string `json:"refusal,omitempty"`
 	} `json:"content,omitempty"`
+	Refusal   string     `json:"refusal,omitempty"`
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+}
+
+type ToolCall struct {
+	ID       string `json:"id,omitempty"`
+	Type     string `json:"type,omitempty"`
+	Custom   string `json:"custom,omitempty"`
+	Function struct {
+		Name      string `json:"name,omitempty"`
+		Arguments []any  `json:"arguments,omitempty"`
+	} `json:"function,omitempty"`
 }
 
 func (r *ChatCompletionsRequest) FromJson(data []byte) error {

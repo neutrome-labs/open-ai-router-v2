@@ -1,10 +1,10 @@
 package modules
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"strings"
-	"sync"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
@@ -12,21 +12,6 @@ import (
 	"github.com/neutrome-labs/open-ai-router-v2/src/service"
 	"go.uber.org/zap"
 )
-
-var authManagerRegistry sync.Map // map[string]*AuthManagerName
-
-func RegisterAuthManager(name string, m service.AuthManager) {
-	authManagerRegistry.Store(strings.ToLower(name), m)
-}
-
-func GetAuthManager(name string) (service.AuthManager, bool) {
-	if v, ok := authManagerRegistry.Load(strings.ToLower(name)); ok {
-		if m, ok2 := v.(service.AuthManager); ok2 {
-			return m, true
-		}
-	}
-	return nil, false
-}
 
 // EnvAuthManagerModule serves authentication from environment variables.
 type EnvAuthManagerModule struct {
@@ -55,7 +40,7 @@ func ParseEnvAuthManagerModuleModule(h httpcaddyfile.Helper) (caddyhttp.Middlewa
 	return &m, nil
 }
 
-func (EnvAuthManagerModule) CaddyModule() caddy.ModuleInfo {
+func (*EnvAuthManagerModule) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
 		ID:  "http.handlers.ai_auth_env",
 		New: func() caddy.Module { return new(EnvAuthManagerModule) },
@@ -64,7 +49,7 @@ func (EnvAuthManagerModule) CaddyModule() caddy.ModuleInfo {
 
 func (m *EnvAuthManagerModule) Provision(ctx caddy.Context) error {
 	m.logger = ctx.Logger(m)
-	RegisterAuthManager(m.Name, m)
+	service.RegisterAuthManager(m.Name, m)
 	return nil
 }
 
@@ -72,12 +57,16 @@ func (m *EnvAuthManagerModule) ServeHTTP(w http.ResponseWriter, r *http.Request,
 	return next.ServeHTTP(w, r)
 }
 
-func (m *EnvAuthManagerModule) CollectTargetAuth(scope string, p *service.ProviderImpl, r *http.Request) (string, error) {
+func (m *EnvAuthManagerModule) CollectTargetAuth(scope string, p *service.ProviderImpl, rIn, rOut *http.Request) (string, error) {
 	key := os.Getenv(strings.ToUpper(p.Name) + "_KEY")
 	if key == "" {
 		m.logger.Warn("no key found in environment variables for provider", zap.String("provider", p.Name))
 		return "", nil
 	}
+
+	ctx := context.WithValue(rIn.Context(), "key_id", "env:"+p.Name)
+	ctx = context.WithValue(ctx, "user_id", "env:"+p.Name)
+	*rIn = *rIn.WithContext(ctx)
 
 	return key, nil
 }

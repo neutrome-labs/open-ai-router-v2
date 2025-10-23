@@ -11,7 +11,6 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
-	"github.com/neutrome-labs/open-ai-router-v2/src/drivers/cfai"
 	"github.com/neutrome-labs/open-ai-router-v2/src/drivers/openai"
 	"github.com/neutrome-labs/open-ai-router-v2/src/service"
 	"go.uber.org/zap"
@@ -157,19 +156,8 @@ func (m *RouterModule) Provision(ctx caddy.Context) error {
 		m.Name = "default"
 	}
 
-	/*if common.TryInstrumentAppObservability() {
-		m.impl.Logger.Info("PostHog observability instrumentation enabled")
-	} else {
-		m.impl.Logger.Warn("Failed to initialize PostHog observability instrumentation, skipping")
-	}*/
-
 	if m.impl.AuthManager == nil {
-		if am, ok := GetAuthManager(m.AuthManagerName); ok {
-			m.impl.AuthManager = am
-			m.impl.Logger.Info("Using auth manager", zap.String("name", m.AuthManagerName))
-		} else {
-			m.impl.Logger.Warn("No auth manager found, requests may fail", zap.String("name", m.AuthManagerName))
-		}
+		m.impl.AuthManager = service.GetAuthManager(m.AuthManagerName)
 	}
 
 	for _, name := range m.ProviderOrder {
@@ -199,12 +187,12 @@ func (m *RouterModule) Provision(ctx caddy.Context) error {
 			providerCommands = []interface{}{
 				&commands.ListModelsAnthropic{},
 				&commands.CompletionsAnthropic{},
-			}*/
+			}
 		case "cloudflare":
 			providerCommands = map[string]any{
 				"list_models":      &cfai.ListModels{},
 				"chat_completions": &cfai.ChatCompletions{},
-			}
+			}*/
 		default:
 			providerCommands = map[string]any{
 				"list_models":      &openai.ListModels{},

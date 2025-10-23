@@ -41,7 +41,7 @@ func (c *ChatCompletions) createChatCompletionsRequest(p *service.ProviderImpl, 
 	// Propagate the original request context for cancellation/timeouts
 	req = req.WithContext(r.Context())
 
-	authVal, err := p.Router.AuthManager.CollectTargetAuth("chat_completions", p, req)
+	authVal, err := p.Router.AuthManager.CollectTargetAuth("chat_completions", p, r, req)
 	if err != nil {
 		return nil, err
 	}
@@ -52,66 +52,66 @@ func (c *ChatCompletions) createChatCompletionsRequest(p *service.ProviderImpl, 
 	return req, nil
 }
 
-func (c *ChatCompletions) DoChatCompletions(p *service.ProviderImpl, data *formats.ChatCompletionsRequest, r *http.Request) (formats.ChatCompletionsResponse, error) {
+func (c *ChatCompletions) DoChatCompletions(p *service.ProviderImpl, data *formats.ChatCompletionsRequest, r *http.Request) (*http.Response, formats.ChatCompletionsResponse, error) {
 	req, err := c.createChatCompletionsRequest(p, data, r)
 	if err != nil {
-		return formats.ChatCompletionsResponse{}, err
+		return nil, formats.ChatCompletionsResponse{}, err
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	res, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return formats.ChatCompletionsResponse{}, err
+		return nil, formats.ChatCompletionsResponse{}, err
 	}
-	defer resp.Body.Close()
+	defer res.Body.Close()
 
 	var respData []byte
-	respData, _ = io.ReadAll(resp.Body)
+	respData, _ = io.ReadAll(res.Body)
 
 	result := formats.ChatCompletionsResponse{}
-	switch resp.StatusCode {
+	switch res.StatusCode {
 	case 200:
 		err = result.FromJson(respData)
 	// todo: retry on 4xx without Bearer eg. strings.Replace(authVal, "Bearer ", "", 1)
 	default:
-		err = fmt.Errorf("%s - %s", resp.Status, string(respData))
+		err = fmt.Errorf("%s", string(respData))
 	}
 
-	return result, err
+	return res, result, err
 }
 
-func (c *ChatCompletions) DoChatCompletionsStream(p *service.ProviderImpl, data *formats.ChatCompletionsRequest, r *http.Request) (chan formats.ChatCompletionsStreamResponseChunk, error) {
+func (c *ChatCompletions) DoChatCompletionsStream(p *service.ProviderImpl, data *formats.ChatCompletionsRequest, r *http.Request) (*http.Response, chan formats.ChatCompletionsStreamResponseChunk, error) {
 	req, err := c.createChatCompletionsRequest(p, data, r)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	res, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	chunks := make(chan formats.ChatCompletionsStreamResponseChunk)
 
 	go func() {
 		defer close(chunks)
-		defer resp.Body.Close()
+		defer res.Body.Close()
 
-		if resp.StatusCode != http.StatusOK {
+		if res.StatusCode != http.StatusOK {
 			// Non-200 responses are not streamed; read the body once and emit as error
-			respData, _ := io.ReadAll(resp.Body)
+			respData, _ := io.ReadAll(res.Body)
 			chunks <- formats.ChatCompletionsStreamResponseChunk{
-				RuntimeError: fmt.Errorf("%s - %s", resp.Status, string(respData)),
+				RuntimeError: fmt.Errorf("%s - %s", res.Status, string(respData)),
 			}
 			return
 		}
 
 		// Prefer SSE parsing when content-type indicates event-stream or when request asked for streaming
-		ct := resp.Header.Get("Content-Type")
+		ct := res.Header.Get("Content-Type")
 		isSSE := strings.HasPrefix(strings.ToLower(ct), "text/event-stream") || data.Stream
 
 		if !isSSE {
 			// Fallback: not an SSE response; read once and try to parse as a single chunk
-			respData, err := io.ReadAll(resp.Body)
+			respData, err := io.ReadAll(res.Body)
 			if err != nil {
 				chunks <- formats.ChatCompletionsStreamResponseChunk{RuntimeError: err}
 				return
@@ -126,7 +126,7 @@ func (c *ChatCompletions) DoChatCompletionsStream(p *service.ProviderImpl, data 
 		}
 
 		// SSE parser: accumulate data: lines until a blank line, then emit one event
-		scanner := bufio.NewScanner(resp.Body)
+		scanner := bufio.NewScanner(res.Body)
 		// Increase max token size to handle larger payloads safely (up to 1MB per event)
 		buf := make([]byte, 64*1024)
 		scanner.Buffer(buf, 1024*1024)
@@ -197,5 +197,5 @@ func (c *ChatCompletions) DoChatCompletionsStream(p *service.ProviderImpl, data 
 		}
 	}()
 
-	return chunks, nil
+	return res, chunks, nil
 }
