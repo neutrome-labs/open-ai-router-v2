@@ -7,6 +7,6 @@ import (
 )
 
 type ChatCompletionsPlugin interface {
-	Before(params string, p *service.ProviderImpl, r *http.Request, req map[string]any) error
-	After(params string, p *service.ProviderImpl, r *http.Request, req map[string]any, hres *http.Response, res map[string]any) error
+	Before(params string, p *service.ProviderImpl, r *http.Request, body []byte) ([]byte, error)
+	After(params string, p *service.ProviderImpl, r *http.Request, body []byte, hres *http.Response, res map[string]any) (map[string]any, error)
 }

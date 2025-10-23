@@ -12,6 +12,6 @@ type ChatCompletionsStreamResponseChunk struct {
 }
 
 type ChatCompletionsCommand interface {
-	DoChatCompletions(p *service.ProviderImpl, data map[string]any, r *http.Request) (*http.Response, map[string]any, error)
-	DoChatCompletionsStream(p *service.ProviderImpl, data map[string]any, r *http.Request) (*http.Response, chan ChatCompletionsStreamResponseChunk, error)
+	DoChatCompletions(p *service.ProviderImpl, body []byte, r *http.Request) (*http.Response, map[string]any, error)
+	DoChatCompletionsStream(p *service.ProviderImpl, body []byte, r *http.Request) (*http.Response, chan ChatCompletionsStreamResponseChunk, error)
 }

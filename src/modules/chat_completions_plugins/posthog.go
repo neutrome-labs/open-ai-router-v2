@@ -2,6 +2,7 @@ package chatcompletionsplugins
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -10,13 +11,18 @@ import (
 
 type Posthog struct{}
 
-func (f *Posthog) Before(params string, p *service.ProviderImpl, r *http.Request, req map[string]any) error {
+func (*Posthog) Before(params string, p *service.ProviderImpl, r *http.Request, body []byte) ([]byte, error) {
 	ctx := context.WithValue(r.Context(), "posthog_time_start", time.Now())
 	*r = *r.WithContext(ctx)
-	return nil
+	return body, nil
 }
 
-func (f *Posthog) After(params string, p *service.ProviderImpl, r *http.Request, req map[string]any, hres *http.Response, res map[string]any) error {
+func (*Posthog) After(params string, p *service.ProviderImpl, r *http.Request, body []byte, hres *http.Response, res map[string]any) (map[string]any, error) {
+	if res["object"] != "chat.completion" {
+		// todo: streaming support
+		return res, nil
+	}
+
 	traceId := r.Context().Value("trace_id").(string)
 	userId := r.Context().Value("user_id").(string)
 	startTime := r.Context().Value("posthog_time_start").(time.Time)
@@ -24,6 +30,11 @@ func (f *Posthog) After(params string, p *service.ProviderImpl, r *http.Request,
 	usageData, ok := res["usage"]
 	if !ok {
 		usageData = map[string]any{}
+	}
+
+	var req map[string]any
+	if err := json.Unmarshal(body, &req); err != nil {
+		return res, nil
 	}
 
 	_ = service.FireObservabilityEvent(userId, "", "$ai_generation", map[string]any{
@@ -41,11 +52,11 @@ func (f *Posthog) After(params string, p *service.ProviderImpl, r *http.Request,
 		"$ai_is_error":       false,
 		"$ai_temperature":    req["temperature"],
 		"$ai_stream":         req["stream"],
+		"$ai_max_tokens":     req["max_tokens"],
 		"$ai_tools":          req["tools"],
-		// "$ai_max_tokens":    500,
 		// "$ai_cache_read_input_tokens": 50,
 		// "$ai_span_name": "data_analysis_chat",
 	})
 
-	return nil
+	return res, nil
 }

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
@@ -56,13 +57,13 @@ func (m *ChatCompletionsModule) Provision(ctx caddy.Context) error {
 	m.plugins = map[string]ccp.ChatCompletionsPlugin{
 		"posthog": &ccp.Posthog{}, // observability
 		"models":  &ccp.Models{},  // model name mapping
-		/*"fuzz":    &ccp.Fuzz{},     // fuzzy search for model name
-		"zip":     &ccp.Zip{},      // zip(max_context_len)
+		"fuzz":    &ccp.Fuzz{},    // fuzzy search for model name
+		/*"zip":     &ccp.Zip{},      // zip(max_context_len)
 		"zipc":    &ccp.Zip{},      // zip with caption (preserve first)
 		"zips":    &ccp.Zip{},      // zip with summary (summarize + last2)
 		"ai18n":   &ccp.AI18n{},    // auto-translate input and output to/from english
 		"optim":   &ccp.Optimize{}, // optimize first prompt for model
-		"tstls":   &ccp.TSTools{},  // tool calls in a mcp->.ts way*/
+		"tstls":   &ccp.TSTools{},  // call tools in a mcp -> .ts way*/
 	}
 	m.mandatoryPlugins = [][2]string{
 		{"posthog", ""},
@@ -75,11 +76,26 @@ func (m *ChatCompletionsModule) Provision(ctx caddy.Context) error {
 }
 
 func (m *ChatCompletionsModule) resolvePlugins(r *http.Request) [][2]string {
-	return append(m.mandatoryPlugins, make([][2]string, 0)...)
+	path := strings.TrimPrefix(r.RequestURI, "/")
+	if path == "" {
+		return m.mandatoryPlugins
+	}
+
+	plugins1 := strings.Split(path, "/")
+	plugins2 := make([][2]string, len(plugins1), len(plugins1))
+	for i, plugin := range plugins1 {
+		xplugin := strings.SplitN(plugin, ":", 2)
+		if len(xplugin) == 1 {
+			plugins2[i] = [2]string{xplugin[0], ""}
+		} else {
+			plugins2[i] = [2]string{xplugin[0], xplugin[1]}
+		}
+	}
+	return append(m.mandatoryPlugins, plugins2...)
 }
 
-func (m *ChatCompletionsModule) serveChatCompletions(p *ProviderDef, cmd commands.ChatCompletionsCommand, req map[string]any, plugins [][2]string, w http.ResponseWriter, r *http.Request) error {
-	hres, res, err := cmd.DoChatCompletions(&p.impl, req, r)
+func (m *ChatCompletionsModule) serveChatCompletions(p *ProviderDef, cmd commands.ChatCompletionsCommand, body []byte, plugins [][2]string, w http.ResponseWriter, r *http.Request) error {
+	hres, res, err := cmd.DoChatCompletions(&p.impl, body, r)
 	if err != nil {
 		m.logger.Error("chat completions error", zap.String("provider", p.Name), zap.Error(err))
 		return err
@@ -87,7 +103,8 @@ func (m *ChatCompletionsModule) serveChatCompletions(p *ProviderDef, cmd command
 
 	for _, plugin := range plugins {
 		pluginImpl, _ := m.plugins[plugin[0]]
-		if err := pluginImpl.After(plugin[1], &p.impl, r, req, hres, res); err != nil {
+		res, err = pluginImpl.After(plugin[1], &p.impl, r, body, hres, res)
+		if err != nil {
 			m.logger.Error("plugin after hook error", zap.String("name", plugin[0]), zap.Error(err))
 			http.Error(w, "plugin after hook error: "+plugin[0], http.StatusInternalServerError)
 			return nil
@@ -109,7 +126,7 @@ func (m *ChatCompletionsModule) serveChatCompletions(p *ProviderDef, cmd command
 	return nil
 }
 
-func (m *ChatCompletionsModule) serveChatCompletionsStream(p *ProviderDef, cmd commands.ChatCompletionsCommand, req map[string]any, plugins [][2]string, w http.ResponseWriter, r *http.Request) error {
+func (m *ChatCompletionsModule) serveChatCompletionsStream(p *ProviderDef, cmd commands.ChatCompletionsCommand, body []byte, plugins [][2]string, w http.ResponseWriter, r *http.Request) error {
 	flusher, _ := w.(http.Flusher)
 
 	hdr := w.Header()
@@ -124,7 +141,7 @@ func (m *ChatCompletionsModule) serveChatCompletionsStream(p *ProviderDef, cmd c
 		flusher.Flush()
 	}
 
-	_, stream, err := cmd.DoChatCompletionsStream(&p.impl, req, r)
+	hres, stream, err := cmd.DoChatCompletionsStream(&p.impl, body, r)
 	if err != nil {
 		m.logger.Error("chat completions stream error (start)", zap.String("provider", p.Name), zap.Error(err))
 		_, _ = w.Write([]byte("data: {\"error\":\"start failed\"}\n\n"))
@@ -142,6 +159,16 @@ func (m *ChatCompletionsModule) serveChatCompletionsStream(p *ProviderDef, cmd c
 				flusher.Flush()
 			}
 			return nil
+		}
+
+		for _, plugin := range plugins {
+			pluginImpl, _ := m.plugins[plugin[0]]
+			chunk.Data, err = pluginImpl.After(plugin[1], &p.impl, r, body, hres, chunk.Data)
+			if err != nil {
+				m.logger.Error("plugin after hook error", zap.String("name", plugin[0]), zap.Error(err))
+				http.Error(w, "plugin after hook error: "+plugin[0], http.StatusInternalServerError)
+				return nil
+			}
 		}
 
 		data, err := json.Marshal(chunk.Data)
@@ -188,8 +215,7 @@ func (m *ChatCompletionsModule) ServeHTTP(w http.ResponseWriter, r *http.Request
 	}
 
 	var reqJson map[string]any
-	err = json.Unmarshal(reqBody, &reqJson)
-	if err != nil {
+	if err = json.Unmarshal(reqBody, &reqJson); err != nil {
 		m.logger.Error("failed to parse request body", zap.Error(err))
 		http.Error(w, "failed to parse request body", http.StatusBadRequest)
 		return nil
@@ -227,7 +253,7 @@ func (m *ChatCompletionsModule) ServeHTTP(w http.ResponseWriter, r *http.Request
 			continue
 		}
 
-		xreq := reqJson
+		xreqBody := reqBody
 
 		for _, plugin := range plugins {
 			pluginImpl, ok := m.plugins[plugin[0]]
@@ -237,15 +263,23 @@ func (m *ChatCompletionsModule) ServeHTTP(w http.ResponseWriter, r *http.Request
 				return nil
 			}
 
-			if err := pluginImpl.Before(plugin[1], &p.impl, r, xreq); err != nil {
+			xreqBody, err = pluginImpl.Before(plugin[1], &p.impl, r, xreqBody)
+			if err != nil {
 				m.logger.Error("plugin before hook error", zap.String("name", plugin[0]), zap.Error(err))
 				http.Error(w, "plugin before hook error: "+plugin[0], http.StatusInternalServerError)
 				return nil
 			}
 		}
 
-		if xreq["stream"] == true {
-			err = m.serveChatCompletionsStream(p, cmd, xreq, plugins, w, r)
+		var xreqJson map[string]any
+		if err := json.Unmarshal(xreqBody, &xreqJson); err != nil {
+			m.logger.Error("failed to parse request body after plugins applied", zap.Error(err))
+			http.Error(w, "failed to parse request body after plugins applied", http.StatusBadRequest)
+			return nil
+		}
+
+		if xreqJson["stream"] == true {
+			err = m.serveChatCompletionsStream(p, cmd, xreqBody, plugins, w, r)
 			if err != nil {
 				if displayErr == nil {
 					displayErr = err
@@ -253,7 +287,7 @@ func (m *ChatCompletionsModule) ServeHTTP(w http.ResponseWriter, r *http.Request
 				continue
 			}
 		} else {
-			err = m.serveChatCompletions(p, cmd, xreq, plugins, w, r)
+			err = m.serveChatCompletions(p, cmd, xreqBody, plugins, w, r)
 			if err != nil {
 				if displayErr == nil {
 					displayErr = err

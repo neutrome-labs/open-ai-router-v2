@@ -16,22 +16,13 @@ import (
 type ChatCompletions struct {
 }
 
-func (c *ChatCompletions) createChatCompletionsRequest(p *service.ProviderImpl, data map[string]any, r *http.Request) (*http.Request, error) {
+func (c *ChatCompletions) createChatCompletionsRequest(p *service.ProviderImpl, body []byte, r *http.Request) (*http.Request, error) {
 	targetUrl := p.ParsedURL
 	targetUrl.Path += "/chat/completions"
 
 	targetHeader := r.Header.Clone()
 	targetHeader.Del("Accept-Encoding")
 	targetHeader.Set("Content-Type", "application/json")
-	if data != nil && data["stream"] == true {
-		// Hint the origin we expect an event-stream when streaming
-		targetHeader.Set("Accept", "text/event-stream")
-	}
-
-	body, err := json.Marshal(data)
-	if err != nil {
-		return nil, err
-	}
 
 	req := &http.Request{
 		Method: "POST",
@@ -53,8 +44,8 @@ func (c *ChatCompletions) createChatCompletionsRequest(p *service.ProviderImpl, 
 	return req, nil
 }
 
-func (c *ChatCompletions) DoChatCompletions(p *service.ProviderImpl, data map[string]any, r *http.Request) (*http.Response, map[string]any, error) {
-	req, err := c.createChatCompletionsRequest(p, data, r)
+func (c *ChatCompletions) DoChatCompletions(p *service.ProviderImpl, body []byte, r *http.Request) (*http.Response, map[string]any, error) {
+	req, err := c.createChatCompletionsRequest(p, body, r)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -80,8 +71,8 @@ func (c *ChatCompletions) DoChatCompletions(p *service.ProviderImpl, data map[st
 	return res, result, err
 }
 
-func (c *ChatCompletions) DoChatCompletionsStream(p *service.ProviderImpl, data map[string]any, r *http.Request) (*http.Response, chan commands.ChatCompletionsStreamResponseChunk, error) {
-	req, err := c.createChatCompletionsRequest(p, data, r)
+func (c *ChatCompletions) DoChatCompletionsStream(p *service.ProviderImpl, body []byte, r *http.Request) (*http.Response, chan commands.ChatCompletionsStreamResponseChunk, error) {
+	req, err := c.createChatCompletionsRequest(p, body, r)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -108,7 +99,7 @@ func (c *ChatCompletions) DoChatCompletionsStream(p *service.ProviderImpl, data 
 
 		// Prefer SSE parsing when content-type indicates event-stream or when request asked for streaming
 		ct := res.Header.Get("Content-Type")
-		isSSE := strings.HasPrefix(strings.ToLower(ct), "text/event-stream") || data["stream"] == true
+		isSSE := strings.HasPrefix(strings.ToLower(ct), "text/event-stream")
 
 		if !isSSE {
 			// Fallback: not an SSE response; read once and try to parse as a single chunk
