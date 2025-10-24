@@ -3,15 +3,15 @@ package modules
 import (
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
-	"github.com/neutrome-labs/open-ai-router-v2/src/service"
+	"github.com/neutrome-labs/open-ai-router-v2/src/services"
 )
 
 var APP_VERSION = "2.0.0"
 
 func init() {
-	service.TryInstrumentAppObservability()
+	services.TryInstrumentAppObservability()
 	defer func() {
-		_ = service.FireObservabilityEvent("app", "", "init", map[string]any{
+		_ = services.FireObservabilityEvent("app", "", "init", map[string]any{
 			"version": APP_VERSION,
 		})
 	}()

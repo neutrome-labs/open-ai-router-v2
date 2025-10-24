@@ -7,13 +7,13 @@ import (
 	"net/http"
 
 	"github.com/neutrome-labs/open-ai-router-v2/src/commands"
-	"github.com/neutrome-labs/open-ai-router-v2/src/service"
+	"github.com/neutrome-labs/open-ai-router-v2/src/services"
 )
 
 type ListModels struct {
 }
 
-func (c *ListModels) DoListModels(p *service.ProviderImpl, r *http.Request) ([]commands.ListModelsModel, error) {
+func (c *ListModels) DoListModels(p *services.ProviderImpl, r *http.Request) ([]commands.ListModelsModel, error) {
 	targetUrl := p.ParsedURL
 	targetUrl.Path += "/models"
 

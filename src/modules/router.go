@@ -12,7 +12,7 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/neutrome-labs/open-ai-router-v2/src/drivers/openai"
-	"github.com/neutrome-labs/open-ai-router-v2/src/service"
+	"github.com/neutrome-labs/open-ai-router-v2/src/services"
 	"go.uber.org/zap"
 )
 
@@ -41,7 +41,7 @@ type RouterModule struct {
 	DefaultProviderForModel map[string][]string     `json:"default_provider_for_model,omitempty"`
 	ProviderOrder           []string                `json:"provider_order,omitempty"`
 
-	impl service.RouterImpl
+	impl services.RouterImpl
 }
 
 type ProviderDef struct {
@@ -49,7 +49,7 @@ type ProviderDef struct {
 	APIBaseURL string `json:"api_base_url,omitempty"`
 	Style      string `json:"style,omitempty"`
 
-	impl service.ProviderImpl
+	impl services.ProviderImpl
 }
 
 func ParseRouterModule(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
@@ -157,7 +157,7 @@ func (m *RouterModule) Provision(ctx caddy.Context) error {
 	}
 
 	if m.impl.AuthManager == nil {
-		m.impl.AuthManager = service.GetAuthManager(m.AuthManagerName)
+		m.impl.AuthManager = services.GetAuthManager(m.AuthManagerName)
 	}
 
 	for _, name := range m.ProviderOrder {
@@ -170,7 +170,7 @@ func (m *RouterModule) Provision(ctx caddy.Context) error {
 		if err != nil {
 			return fmt.Errorf("provider %s: invalid api_base_url '%s': %v", name, p.APIBaseURL, err)
 		}
-		p.impl = service.ProviderImpl{
+		p.impl = services.ProviderImpl{
 			Name:      name,
 			ParsedURL: *parsedURL,
 			Router:    &m.impl,

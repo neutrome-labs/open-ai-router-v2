@@ -9,7 +9,7 @@ import (
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
-	"github.com/neutrome-labs/open-ai-router-v2/src/service"
+	"github.com/neutrome-labs/open-ai-router-v2/src/services"
 	"go.uber.org/zap"
 )
 
@@ -49,7 +49,7 @@ func (*EnvAuthManagerModule) CaddyModule() caddy.ModuleInfo {
 
 func (m *EnvAuthManagerModule) Provision(ctx caddy.Context) error {
 	m.logger = ctx.Logger(m)
-	service.RegisterAuthManager(m.Name, m)
+	services.RegisterAuthManager(m.Name, m)
 	return nil
 }
 
@@ -57,7 +57,7 @@ func (m *EnvAuthManagerModule) ServeHTTP(w http.ResponseWriter, r *http.Request,
 	return next.ServeHTTP(w, r)
 }
 
-func (m *EnvAuthManagerModule) CollectTargetAuth(scope string, p *service.ProviderImpl, rIn, rOut *http.Request) (string, error) {
+func (m *EnvAuthManagerModule) CollectTargetAuth(scope string, p *services.ProviderImpl, rIn, rOut *http.Request) (string, error) {
 	key := os.Getenv(strings.ToUpper(p.Name) + "_KEY")
 	if key == "" {
 		m.logger.Warn("no key found in environment variables for provider", zap.String("provider", p.Name))

@@ -6,18 +6,18 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/neutrome-labs/open-ai-router-v2/src/service"
+	"github.com/neutrome-labs/open-ai-router-v2/src/services"
 )
 
 type Posthog struct{}
 
-func (*Posthog) Before(params string, p *service.ProviderImpl, r *http.Request, body []byte) ([]byte, error) {
+func (*Posthog) Before(params string, p *services.ProviderImpl, r *http.Request, body []byte) ([]byte, error) {
 	ctx := context.WithValue(r.Context(), "posthog_time_start", time.Now())
 	*r = *r.WithContext(ctx)
 	return body, nil
 }
 
-func (*Posthog) After(params string, p *service.ProviderImpl, r *http.Request, body []byte, hres *http.Response, res map[string]any) (map[string]any, error) {
+func (*Posthog) After(params string, p *services.ProviderImpl, r *http.Request, body []byte, hres *http.Response, res map[string]any) (map[string]any, error) {
 	if res != nil && res["object"] == "chat.completion.chunk" && res["usage"] == nil {
 		return res, nil
 	}
@@ -46,7 +46,7 @@ func (*Posthog) After(params string, p *service.ProviderImpl, r *http.Request, b
 		usageData = map[string]any{}
 	}
 
-	_ = service.FireObservabilityEvent(userId, "", "$ai_generation", map[string]any{
+	_ = services.FireObservabilityEvent(userId, "", "$ai_generation", map[string]any{
 		"$ai_trace_id":       traceId,
 		"$ai_model":          req["model"],
 		"$ai_provider":       p.Name,

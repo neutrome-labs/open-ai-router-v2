@@ -3,7 +3,7 @@ package commands
 import (
 	"net/http"
 
-	"github.com/neutrome-labs/open-ai-router-v2/src/service"
+	"github.com/neutrome-labs/open-ai-router-v2/src/services"
 )
 
 type ListModelsModel struct {
@@ -12,5 +12,5 @@ type ListModelsModel struct {
 }
 
 type ListModelsCommand interface {
-	DoListModels(p *service.ProviderImpl, r *http.Request) ([]ListModelsModel, error)
+	DoListModels(p *services.ProviderImpl, r *http.Request) ([]ListModelsModel, error)
 }

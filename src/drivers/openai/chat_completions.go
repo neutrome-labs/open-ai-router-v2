@@ -10,13 +10,13 @@ import (
 	"strings"
 
 	"github.com/neutrome-labs/open-ai-router-v2/src/commands"
-	"github.com/neutrome-labs/open-ai-router-v2/src/service"
+	"github.com/neutrome-labs/open-ai-router-v2/src/services"
 )
 
 type ChatCompletions struct {
 }
 
-func (c *ChatCompletions) createChatCompletionsRequest(p *service.ProviderImpl, body []byte, r *http.Request) (*http.Request, error) {
+func (c *ChatCompletions) createChatCompletionsRequest(p *services.ProviderImpl, body []byte, r *http.Request) (*http.Request, error) {
 	targetUrl := p.ParsedURL
 	targetUrl.Path += "/chat/completions"
 
@@ -44,7 +44,7 @@ func (c *ChatCompletions) createChatCompletionsRequest(p *service.ProviderImpl, 
 	return req, nil
 }
 
-func (c *ChatCompletions) DoChatCompletions(p *service.ProviderImpl, body []byte, r *http.Request) (*http.Response, map[string]any, error) {
+func (c *ChatCompletions) DoChatCompletions(p *services.ProviderImpl, body []byte, r *http.Request) (*http.Response, map[string]any, error) {
 	req, err := c.createChatCompletionsRequest(p, body, r)
 	if err != nil {
 		return nil, nil, err
@@ -71,7 +71,7 @@ func (c *ChatCompletions) DoChatCompletions(p *service.ProviderImpl, body []byte
 	return res, result, err
 }
 
-func (c *ChatCompletions) DoChatCompletionsStream(p *service.ProviderImpl, body []byte, r *http.Request) (*http.Response, chan commands.ChatCompletionsStreamResponseChunk, error) {
+func (c *ChatCompletions) DoChatCompletionsStream(p *services.ProviderImpl, body []byte, r *http.Request) (*http.Response, chan commands.ChatCompletionsStreamResponseChunk, error) {
 	req, err := c.createChatCompletionsRequest(p, body, r)
 	if err != nil {
 		return nil, nil, err

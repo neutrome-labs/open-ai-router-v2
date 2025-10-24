@@ -7,14 +7,14 @@ import (
 	"sync"
 
 	"github.com/neutrome-labs/open-ai-router-v2/src/commands"
-	"github.com/neutrome-labs/open-ai-router-v2/src/service"
+	"github.com/neutrome-labs/open-ai-router-v2/src/services"
 )
 
 type Fuzz struct {
 	knownModelsCache sync.Map
 }
 
-func (f *Fuzz) Before(params string, p *service.ProviderImpl, r *http.Request, body []byte) ([]byte, error) {
+func (f *Fuzz) Before(params string, p *services.ProviderImpl, r *http.Request, body []byte) ([]byte, error) {
 	var req map[string]any
 	err := json.Unmarshal(body, &req)
 	if err != nil {
@@ -56,6 +56,6 @@ func (f *Fuzz) Before(params string, p *service.ProviderImpl, r *http.Request, b
 	return body, nil
 }
 
-func (f *Fuzz) After(params string, p *service.ProviderImpl, r *http.Request, body []byte, hres *http.Response, res map[string]any) (map[string]any, error) {
+func (f *Fuzz) After(params string, p *services.ProviderImpl, r *http.Request, body []byte, hres *http.Response, res map[string]any) (map[string]any, error) {
 	return res, nil
 }

@@ -3,7 +3,7 @@ package commands
 import (
 	"net/http"
 
-	"github.com/neutrome-labs/open-ai-router-v2/src/service"
+	"github.com/neutrome-labs/open-ai-router-v2/src/services"
 )
 
 type ChatCompletionsStreamResponseChunk struct {
@@ -12,6 +12,6 @@ type ChatCompletionsStreamResponseChunk struct {
 }
 
 type ChatCompletionsCommand interface {
-	DoChatCompletions(p *service.ProviderImpl, body []byte, r *http.Request) (*http.Response, map[string]any, error)
-	DoChatCompletionsStream(p *service.ProviderImpl, body []byte, r *http.Request) (*http.Response, chan ChatCompletionsStreamResponseChunk, error)
+	DoChatCompletions(p *services.ProviderImpl, body []byte, r *http.Request) (*http.Response, map[string]any, error)
+	DoChatCompletionsStream(p *services.ProviderImpl, body []byte, r *http.Request) (*http.Response, chan ChatCompletionsStreamResponseChunk, error)
 }
