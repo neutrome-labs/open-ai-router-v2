@@ -76,37 +76,56 @@ func (m *ChatCompletionsModule) Provision(ctx caddy.Context) error {
 }
 
 func (m *ChatCompletionsModule) resolvePlugins(r *http.Request, reqJson map[string]any) [][2]string {
-	// plugins from path eg /chat/completions/plugin1:arg1/plugin2:arg2
-	path := strings.TrimPrefix(r.RequestURI, "/")
-	plugins1 := strings.Split(path, "/")
-	plugins2 := make([][2]string, len(plugins1))
-	for i, plugin := range plugins1 {
-		xplugin := strings.SplitN(plugin, ":", 2)
-		if len(xplugin) == 1 {
-			plugins2[i] = [2]string{xplugin[0], ""}
-		} else {
-			plugins2[i] = [2]string{xplugin[0], xplugin[1]}
+	// Pre-allocate with capacity for mandatory plugins + estimated extras
+	result := make([][2]string, len(m.mandatoryPlugins), len(m.mandatoryPlugins)+4)
+	copy(result, m.mandatoryPlugins)
+
+	// plugins from path eg plugin1:arg1/plugin2:arg2 (path already stripped of /chat/completions)
+	path := strings.TrimPrefix(r.URL.Path, "/")
+	if path != "" {
+		pathParts := strings.Split(path, "/")
+		for _, part := range pathParts {
+			if part == "" {
+				continue
+			}
+			if idx := strings.IndexByte(part, ':'); idx > 0 {
+				result = append(result, [2]string{part[:idx], part[idx+1:]})
+			} else if part != "" {
+				result = append(result, [2]string{part, ""})
+			}
 		}
 	}
 
 	// plugin from model tags eg model="gpt-4+plugin1:arg1+plugin2:arg2"
-	if modelRaw, ok := reqJson["model"]; ok {
-		if modelStr, ok := modelRaw.(string); ok {
-			modelParts := strings.Split(modelStr, "+")
-			if len(modelParts) > 1 {
-				for _, part := range modelParts[1:] {
-					xplugin := strings.SplitN(part, ":", 2)
-					if len(xplugin) == 1 {
-						plugins2 = append(plugins2, [2]string{xplugin[0], ""})
-					} else {
-						plugins2 = append(plugins2, [2]string{xplugin[0], xplugin[1]})
+	modelStr, _ := reqJson["model"].(string)
+	if modelStr != "" {
+		if idx := strings.IndexByte(modelStr, '+'); idx >= 0 {
+			pluginPart := modelStr[idx+1:]
+			for len(pluginPart) > 0 {
+				var part string
+				if nextIdx := strings.IndexByte(pluginPart, '+'); nextIdx >= 0 {
+					part = pluginPart[:nextIdx]
+					pluginPart = pluginPart[nextIdx+1:]
+				} else {
+					part = pluginPart
+					pluginPart = ""
+				}
+				if part == "" {
+					continue
+				}
+				if colonIdx := strings.IndexByte(part, ':'); colonIdx >= 0 {
+					name := part[:colonIdx]
+					if name != "" {
+						result = append(result, [2]string{name, part[colonIdx+1:]})
 					}
+				} else {
+					result = append(result, [2]string{part, ""})
 				}
 			}
 		}
 	}
 
-	return append(m.mandatoryPlugins, plugins2...)
+	return result
 }
 
 func (m *ChatCompletionsModule) serveChatCompletions(p *ProviderDef, cmd commands.ChatCompletionsCommand, body []byte, plugins [][2]string, w http.ResponseWriter, r *http.Request) error {
@@ -247,6 +266,7 @@ func (m *ChatCompletionsModule) ServeHTTP(w http.ResponseWriter, r *http.Request
 
 	plugins := m.resolvePlugins(r, reqJson)
 	providers, model := router.ResolveProvidersOrderAndModel(reqJson["model"].(string))
+	reqJson["model"] = model // Update model name after resolving plugins
 
 	traceId := uuid.New().String()
 	r = r.WithContext(context.WithValue(r.Context(), "trace_id", traceId))
@@ -268,7 +288,12 @@ func (m *ChatCompletionsModule) ServeHTTP(w http.ResponseWriter, r *http.Request
 			continue
 		}
 
-		xreqBody := reqBody
+		xreqBody, err := json.Marshal(reqJson)
+		if err != nil {
+			m.logger.Error("failed to marshal xrequest body", zap.Error(err))
+			http.Error(w, "failed to marshal xrequest body", http.StatusInternalServerError)
+			return nil
+		}
 
 		for _, plugin := range plugins {
 			pluginImpl, ok := m.plugins[plugin[0]]

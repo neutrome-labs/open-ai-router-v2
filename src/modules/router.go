@@ -226,33 +226,33 @@ func (m *RouterModule) ResolveProvidersOrderAndModel(model string) (providerName
 	m.impl.Mu.RLock() // Ensure read lock for accessing shared provider maps
 	defer m.impl.Mu.RUnlock()
 
-	actualModelName = model // Default to requested model name
+	actualModelName = strings.SplitN(model, "+", 2)[0] // Default to requested model name without plugins
 
 	// Check for explicit provider prefix: "providerName/modelName"
-	parts := strings.SplitN(model, "/", 2)
+	parts := strings.SplitN(actualModelName, "/", 2)
 	if len(parts) == 2 {
 		pName := strings.ToLower(parts[0])
-		model := parts[1]
+		actualModelName = parts[1]
 		if _, ok := m.Providers[pName]; ok { // Check if the prefixed provider is configured
-			m.impl.Logger.Debug("Found explicit provider by prefix", zap.String("prefix", pName), zap.String("model", model)) // Changed to Debug
-			return append([]string{pName}, m.ProviderOrder...), model
+			m.impl.Logger.Debug("Found explicit provider by prefix", zap.String("prefix", pName), zap.String("model", actualModelName)) // Changed to Debug
+			return append([]string{pName}, m.ProviderOrder...), actualModelName
 		}
 		// Log if prefix is found but provider isn't recognized, then proceed to other checks
-		m.impl.Logger.Debug("Prefix found but provider not recognized, checking defaults", zap.String("prefix", pName), zap.String("requested_model", model)) // Changed to Debug
+		m.impl.Logger.Debug("Prefix found but provider not recognized, checking defaults", zap.String("prefix", pName), zap.String("requested_model", actualModelName)) // Changed to Debug
 	}
 
 	// Check for model-specific default provider
-	if pNames, ok := m.DefaultProviderForModel[model]; ok {
+	if pNames, ok := m.DefaultProviderForModel[actualModelName]; ok {
 		for _, pName := range pNames {
 			if _, providerExists := m.Providers[pName]; providerExists {
-				m.impl.Logger.Debug("Found default provider for model", zap.String("model", model), zap.String("provider", pName)) // Changed to Debug
-				return append([]string{pName}, m.ProviderOrder...), model                                                          // Model name remains as requested
+				m.impl.Logger.Debug("Found default provider for model", zap.String("model", actualModelName), zap.String("provider", pName)) // Changed to Debug
+				return append([]string{pName}, m.ProviderOrder...), actualModelName                                                          // Model name remains as requested
 			}
-			m.impl.Logger.Warn("Default provider for model configured but provider itself not found", zap.String("model", model), zap.String("configured_provider", pName))
+			m.impl.Logger.Warn("Default provider for model configured but provider itself not found", zap.String("model", actualModelName), zap.String("configured_provider", pName))
 		}
 	}
 
-	return m.ProviderOrder, model
+	return m.ProviderOrder, actualModelName
 }
 
 var (
