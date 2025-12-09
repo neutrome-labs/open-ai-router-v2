@@ -87,7 +87,10 @@ func (m *ListModelsModule) ServeHTTP(w http.ResponseWriter, r *http.Request, nex
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	return json.NewEncoder(w).Encode(models)
+	return json.NewEncoder(w).Encode(map[string]any{
+		"object": "list",
+		"data":   models,
+	})
 }
 
 var (

@@ -63,7 +63,7 @@ func (m *ChatCompletionsModule) Provision(ctx caddy.Context) error {
 		"zips":    &ccp.Zip{},      // zip with summary (summarize + last2)
 		"ai18n":   &ccp.AI18n{},    // auto-translate input and output to/from english
 		"optim":   &ccp.Optimize{}, // optimize first prompt for model
-		"tstls":   &ccp.TSTools{},  // call tools in a mcp -> .ts way*/
+		"codemode":   &ccp.TSTools{},  // call tools in a mcp -> .ts way*/
 	}
 	m.mandatoryPlugins = [][2]string{
 		{"posthog", ""},
@@ -75,14 +75,11 @@ func (m *ChatCompletionsModule) Provision(ctx caddy.Context) error {
 	return nil
 }
 
-func (m *ChatCompletionsModule) resolvePlugins(r *http.Request) [][2]string {
+func (m *ChatCompletionsModule) resolvePlugins(r *http.Request, reqJson map[string]any) [][2]string {
+	// plugins from path eg /chat/completions/plugin1:arg1/plugin2:arg2
 	path := strings.TrimPrefix(r.RequestURI, "/")
-	if path == "" {
-		return m.mandatoryPlugins
-	}
-
 	plugins1 := strings.Split(path, "/")
-	plugins2 := make([][2]string, len(plugins1), len(plugins1))
+	plugins2 := make([][2]string, len(plugins1))
 	for i, plugin := range plugins1 {
 		xplugin := strings.SplitN(plugin, ":", 2)
 		if len(xplugin) == 1 {
@@ -91,6 +88,24 @@ func (m *ChatCompletionsModule) resolvePlugins(r *http.Request) [][2]string {
 			plugins2[i] = [2]string{xplugin[0], xplugin[1]}
 		}
 	}
+
+	// plugin from model tags eg model="gpt-4+plugin1:arg1+plugin2:arg2"
+	if modelRaw, ok := reqJson["model"]; ok {
+		if modelStr, ok := modelRaw.(string); ok {
+			modelParts := strings.Split(modelStr, "+")
+			if len(modelParts) > 1 {
+				for _, part := range modelParts[1:] {
+					xplugin := strings.SplitN(part, ":", 2)
+					if len(xplugin) == 1 {
+						plugins2 = append(plugins2, [2]string{xplugin[0], ""})
+					} else {
+						plugins2 = append(plugins2, [2]string{xplugin[0], xplugin[1]})
+					}
+				}
+			}
+		}
+	}
+
 	return append(m.mandatoryPlugins, plugins2...)
 }
 
@@ -102,7 +117,7 @@ func (m *ChatCompletionsModule) serveChatCompletions(p *ProviderDef, cmd command
 	}
 
 	for _, plugin := range plugins {
-		pluginImpl, _ := m.plugins[plugin[0]]
+		pluginImpl := m.plugins[plugin[0]]
 		res, err = pluginImpl.After(plugin[1], &p.impl, r, body, hres, res)
 		if err != nil {
 			m.logger.Error("plugin after hook error", zap.String("name", plugin[0]), zap.Error(err))
@@ -162,7 +177,7 @@ func (m *ChatCompletionsModule) serveChatCompletionsStream(p *ProviderDef, cmd c
 		}
 
 		for _, plugin := range plugins {
-			pluginImpl, _ := m.plugins[plugin[0]]
+			pluginImpl := m.plugins[plugin[0]]
 			chunk.Data, err = pluginImpl.After(plugin[1], &p.impl, r, body, hres, chunk.Data)
 			if err != nil {
 				m.logger.Error("plugin after hook error", zap.String("name", plugin[0]), zap.Error(err))
@@ -230,7 +245,7 @@ func (m *ChatCompletionsModule) ServeHTTP(w http.ResponseWriter, r *http.Request
 		return nil
 	}
 
-	plugins := m.resolvePlugins(r)
+	plugins := m.resolvePlugins(r, reqJson)
 	providers, model := router.ResolveProvidersOrderAndModel(reqJson["model"].(string))
 
 	traceId := uuid.New().String()
