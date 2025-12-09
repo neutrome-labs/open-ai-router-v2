@@ -1,7 +1,6 @@
 package openai
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/neutrome-labs/open-ai-router-v2/src/commands"
 	"github.com/neutrome-labs/open-ai-router-v2/src/services"
+	"github.com/neutrome-labs/open-ai-router-v2/src/sse"
 )
 
 type ChatCompletions struct {
@@ -97,7 +97,7 @@ func (c *ChatCompletions) DoChatCompletionsStream(p *services.ProviderImpl, body
 			return
 		}
 
-		// Prefer SSE parsing when content-type indicates event-stream or when request asked for streaming
+		// Prefer SSE parsing when content-type indicates event-stream
 		ct := res.Header.Get("Content-Type")
 		isSSE := strings.HasPrefix(strings.ToLower(ct), "text/event-stream")
 
@@ -117,75 +117,19 @@ func (c *ChatCompletions) DoChatCompletionsStream(p *services.ProviderImpl, body
 			return
 		}
 
-		// SSE parser: accumulate data: lines until a blank line, then emit one event
-		scanner := bufio.NewScanner(res.Body)
-		// Increase max token size to handle larger payloads safely (up to 1MB per event)
-		buf := make([]byte, 64*1024)
-		scanner.Buffer(buf, 1024*1024)
-
-		var eventData bytes.Buffer
-		emitEvent := func(payload string) bool {
-			// returns true to continue, false to stop
-			if payload == "" {
-				return true
-			}
-			if payload == "[DONE]" {
-				return false
-			}
-			var respJson map[string]any
-			if err := json.Unmarshal([]byte(payload), &respJson); err != nil {
-				chunks <- commands.ChatCompletionsStreamResponseChunk{RuntimeError: err}
-				return false
-			}
-			chunks <- commands.ChatCompletionsStreamResponseChunk{Data: respJson}
-			return true
-		}
-
-		for scanner.Scan() {
-			line := scanner.Text()
-			// Trim trailing CR just in case (Windows style newlines over proxies)
-			line = strings.TrimRight(line, "\r")
-			if strings.HasPrefix(line, ":") {
-				// comment/heartbeat line per SSE spec; ignore
-				continue
-			}
-			if strings.HasPrefix(line, "data:") {
-				// strip field name and optional space
-				val := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-				if eventData.Len() > 0 {
-					eventData.WriteByte('\n')
-				}
-				eventData.WriteString(val)
-				continue
-			}
-			if strings.HasPrefix(line, "event:") || strings.HasPrefix(line, "id:") || strings.HasPrefix(line, "retry:") {
-				// not used by OpenAI; ignore but keep collecting until blank line
-				continue
-			}
-			if strings.TrimSpace(line) == "" {
-				// blank line indicates end of an event
-				if eventData.Len() > 0 {
-					payload := eventData.String()
-					eventData.Reset()
-					if ok := emitEvent(payload); !ok {
-						return
-					}
-				}
-				continue
-			}
-			// Unknown line content; ignore
-		}
-
-		// Flush last event if stream ended without trailing blank line
-		if eventData.Len() > 0 {
-			if ok := emitEvent(eventData.String()); !ok {
+		// Use SSE reader to parse the event stream
+		reader := sse.NewDefaultReader(res.Body)
+		for event := range reader.ReadEvents() {
+			if event.Error != nil {
+				chunks <- commands.ChatCompletionsStreamResponseChunk{RuntimeError: event.Error}
 				return
 			}
-		}
-
-		if err := scanner.Err(); err != nil && err != io.EOF {
-			chunks <- commands.ChatCompletionsStreamResponseChunk{RuntimeError: err}
-			return
+			if event.Done {
+				return
+			}
+			if event.Data != nil {
+				chunks <- commands.ChatCompletionsStreamResponseChunk{Data: event.Data}
+			}
 		}
 	}()
 

@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httputil"
-	"net/url"
 	"strings"
 
 	"github.com/caddyserver/caddy/v2"
@@ -15,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/neutrome-labs/open-ai-router-v2/src/commands"
 	ccp "github.com/neutrome-labs/open-ai-router-v2/src/modules/chat_completions_plugins"
+	"github.com/neutrome-labs/open-ai-router-v2/src/sse"
 	"go.uber.org/zap"
 )
 
@@ -24,7 +23,6 @@ type ChatCompletionsModule struct {
 	plugins          map[string]ccp.ChatCompletionsPlugin
 	mandatoryPlugins [][2]string
 
-	proxy  *httputil.ReverseProxy
 	logger *zap.Logger
 }
 
@@ -70,7 +68,6 @@ func (m *ChatCompletionsModule) Provision(ctx caddy.Context) error {
 		{"models", ""},
 	}
 
-	m.proxy = httputil.NewSingleHostReverseProxy(&url.URL{})
 	m.logger = ctx.Logger(m)
 	return nil
 }
@@ -161,43 +158,31 @@ func (m *ChatCompletionsModule) serveChatCompletions(p *ProviderDef, cmd command
 }
 
 func (m *ChatCompletionsModule) serveChatCompletionsStream(p *ProviderDef, cmd commands.ChatCompletionsCommand, body []byte, plugins [][2]string, w http.ResponseWriter, r *http.Request) error {
-	flusher, _ := w.(http.Flusher)
+	sseWriter := sse.NewWriter(w)
 
-	hdr := w.Header()
-	hdr.Set("Content-Type", "text/event-stream")
-	hdr.Set("Cache-Control", "no-cache, no-transform")
-	hdr.Set("Connection", "keep-alive")
-	hdr.Set("X-Accel-Buffering", "no")
-	hdr.Del("Content-Encoding")
-
-	_, _ = w.Write([]byte(":ok\n\n"))
-	if flusher != nil {
-		flusher.Flush()
+	if err := sseWriter.WriteHeartbeat("ok"); err != nil {
+		return err
 	}
 
 	hres, stream, err := cmd.DoChatCompletionsStream(&p.impl, body, r)
 	if err != nil {
 		m.logger.Error("chat completions stream error (start)", zap.String("provider", p.Name), zap.Error(err))
-		_, _ = w.Write([]byte("data: {\"error\":\"start failed\"}\n\n"))
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
-		if flusher != nil {
-			flusher.Flush()
-		}
+		_ = sseWriter.WriteError("start failed")
+		_ = sseWriter.WriteDone()
 		return err
 	}
 
 	for chunk := range stream {
 		if chunk.RuntimeError != nil {
-			_, _ = w.Write([]byte("data: {\"error\":\"" + chunk.RuntimeError.Error() + "\"}\n\n"))
-			if flusher != nil {
-				flusher.Flush()
-			}
+			_ = sseWriter.WriteError(chunk.RuntimeError.Error())
 			return nil
 		}
 
+		// Apply after-plugins to each chunk
+		chunkData := chunk.Data
 		for _, plugin := range plugins {
 			pluginImpl := m.plugins[plugin[0]]
-			chunk.Data, err = pluginImpl.After(plugin[1], &p.impl, r, body, hres, chunk.Data)
+			chunkData, err = pluginImpl.After(plugin[1], &p.impl, r, body, hres, chunkData)
 			if err != nil {
 				m.logger.Error("plugin after hook error", zap.String("name", plugin[0]), zap.Error(err))
 				http.Error(w, "plugin after hook error: "+plugin[0], http.StatusInternalServerError)
@@ -205,38 +190,13 @@ func (m *ChatCompletionsModule) serveChatCompletionsStream(p *ProviderDef, cmd c
 			}
 		}
 
-		data, err := json.Marshal(chunk.Data)
-		if err != nil {
-			m.logger.Error("chat completions stream error", zap.String("provider", p.Name), zap.Error(err))
-			_, _ = w.Write([]byte("data: {\"error\":\"marshal failed\"}\n\n"))
-			if flusher != nil {
-				flusher.Flush()
-			}
-			return err
-		}
-
-		if _, err := w.Write([]byte("data: ")); err != nil {
+		if err := sseWriter.WriteData(chunkData); err != nil {
 			m.logger.Error("chat completions stream write error", zap.String("provider", p.Name), zap.Error(err))
 			return err
-		}
-		if _, err := w.Write(data); err != nil {
-			m.logger.Error("chat completions stream write error", zap.String("provider", p.Name), zap.Error(err))
-			return err
-		}
-		if _, err := w.Write([]byte("\n\n")); err != nil {
-			m.logger.Error("chat completions stream write error", zap.String("provider", p.Name), zap.Error(err))
-			return err
-		}
-
-		if flusher != nil {
-			flusher.Flush()
 		}
 	}
 
-	_, _ = w.Write([]byte("data: [DONE]\n\n"))
-	if flusher != nil {
-		flusher.Flush()
-	}
+	_ = sseWriter.WriteDone()
 	return nil
 }
 
