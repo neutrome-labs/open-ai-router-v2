@@ -3,6 +3,7 @@ package modules
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
@@ -81,6 +82,12 @@ func (m *ListModelsModule) ServeHTTP(w http.ResponseWriter, r *http.Request, nex
 		if err != nil {
 			m.logger.Error("Error listing models", zap.String("provider", name), zap.Error(err))
 			continue
+		}
+
+		for i := range xmodels {
+			if xmodels[i].ID == "" {
+				xmodels[i].ID = strings.ToLower(p.Name) + "/" + xmodels[i].ID
+			}
 		}
 
 		models = append(models, xmodels...)

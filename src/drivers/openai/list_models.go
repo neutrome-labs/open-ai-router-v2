@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 
 	"github.com/neutrome-labs/open-ai-router-v2/src/commands"
 	"github.com/neutrome-labs/open-ai-router-v2/src/services"
@@ -59,12 +58,6 @@ func (c *ListModels) DoListModels(p *services.ProviderImpl, r *http.Request) ([]
 	err = json.Unmarshal(data, &result)
 	if err != nil {
 		return nil, fmt.Errorf("%s; data: %s", err, string(data))
-	}
-
-	for i := range result.Data {
-		if result.Data[i].ID == "" {
-			result.Data[i].Name = strings.ToLower(p.Name) + "/" + result.Data[i].Name
-		}
 	}
 
 	return result.Data, nil
