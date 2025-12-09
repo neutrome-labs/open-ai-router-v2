@@ -85,9 +85,7 @@ func (m *ListModelsModule) ServeHTTP(w http.ResponseWriter, r *http.Request, nex
 		}
 
 		for i := range xmodels {
-			if xmodels[i].ID == "" {
-				xmodels[i].ID = strings.ToLower(p.Name) + "/" + xmodels[i].ID
-			}
+			xmodels[i].ID = strings.ToLower(p.Name) + "/" + xmodels[i].ID
 		}
 
 		models = append(models, xmodels...)
