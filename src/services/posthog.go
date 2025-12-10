@@ -6,15 +6,18 @@ import (
 	"github.com/posthog/posthog-go"
 )
 
+var posthogEndpoint = os.Getenv("POSTHOG_BASE_URL")
+var posthogAPIKey = os.Getenv("POSTHOG_API_KEY")
+var PosthogIncludeContent = os.Getenv("POSTHOG_INCLUDE_CONTENT") == "true"
+
 var posthogClient posthog.Client
 
 func TryInstrumentAppObservability() bool {
-	key := os.Getenv("POSTHOG_API_KEY")
-	if key == "" {
+	if posthogAPIKey == "" {
 		return false
 	}
 
-	client, err := posthog.NewWithConfig(key, posthog.Config{Endpoint: os.Getenv("POSTHOG_BASE_URL")})
+	client, err := posthog.NewWithConfig(posthogAPIKey, posthog.Config{Endpoint: posthogEndpoint})
 	if err != nil {
 		return false
 	}
