@@ -58,7 +58,7 @@ func (m *EnvAuthManagerModule) ServeHTTP(w http.ResponseWriter, r *http.Request,
 }
 
 func (m *EnvAuthManagerModule) CollectTargetAuth(scope string, p *services.ProviderImpl, rIn, rOut *http.Request) (string, error) {
-	key := os.Getenv(strings.ToUpper(p.Name) + "_KEY")
+	key := os.Getenv(strings.ToUpper(p.Name) + "_API_KEY")
 	if key == "" {
 		m.logger.Warn("no key found in environment variables for provider", zap.String("provider", p.Name))
 		return "", nil

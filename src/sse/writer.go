@@ -25,6 +25,12 @@ func NewWriter(w http.ResponseWriter) *Writer {
 	return &Writer{w: w, flusher: flusher}
 }
 
+// Header returns the response header map to allow setting custom headers
+// before writing the first chunk
+func (sw *Writer) Header() http.Header {
+	return sw.w.Header()
+}
+
 // WriteHeartbeat writes an SSE comment as a heartbeat/init signal
 func (sw *Writer) WriteHeartbeat(msg string) error {
 	if _, err := sw.w.Write([]byte(":" + msg + "\n\n")); err != nil {

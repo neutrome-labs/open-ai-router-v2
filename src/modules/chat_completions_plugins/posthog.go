@@ -216,10 +216,34 @@ func (*Posthog) After(params string, p *services.ProviderImpl, r *http.Request, 
 		return res, nil
 	}
 
+	// Determine error state
 	isError := false
-	if res == nil {
-		res = map[string]any{}
+	var errorMessage string
+	httpStatus := 0
+
+	if hres != nil {
+		httpStatus = hres.StatusCode
+		if httpStatus >= 400 {
+			isError = true
+		}
+	} else {
 		isError = true
+		httpStatus = 0
+	}
+
+	if res == nil {
+		isError = true
+		res = map[string]any{}
+	} else if errVal, ok := res["error"]; ok {
+		isError = true
+		// Extract error message if available
+		if errMap, ok := errVal.(map[string]any); ok {
+			if msg, ok := errMap["message"].(string); ok {
+				errorMessage = msg
+			}
+		} else if errStr, ok := errVal.(string); ok {
+			errorMessage = errStr
+		}
 	}
 
 	usageData, _ := res["usage"].(map[string]any)
@@ -243,13 +267,18 @@ func (*Posthog) After(params string, p *services.ProviderImpl, r *http.Request, 
 		"$ai_input_tokens":  usageData["prompt_tokens"],
 		"$ai_output_tokens": usageData["completion_tokens"],
 		"$ai_latency":       time.Since(startTime).Seconds(),
-		"$ai_http_status":   hres.StatusCode,
+		"$ai_http_status":   httpStatus,
 		"$ai_base_url":      p.ParsedURL.String(),
 		"$ai_request_url":   r.URL.String(),
 		"$ai_is_error":      isError,
 		"$ai_temperature":   req["temperature"],
 		"$ai_stream":        req["stream"],
 		"$ai_max_tokens":    req["max_tokens"],
+	}
+
+	// Add error message if present
+	if errorMessage != "" {
+		event["$ai_error_message"] = errorMessage
 	}
 
 	// Include content-related fields only if enabled via env

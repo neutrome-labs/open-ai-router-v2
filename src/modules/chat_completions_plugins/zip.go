@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"github.com/neutrome-labs/open-ai-router-v2/src/services"
+	"go.uber.org/zap"
 )
 
 // Zip implements auto-compaction for long conversations.
@@ -225,6 +226,8 @@ func (z *Zip) doSummarize(p *services.ProviderImpl, r *http.Request, messages []
 }
 
 func (z *Zip) Before(params string, p *services.ProviderImpl, r *http.Request, body []byte) ([]byte, error) {
+	Logger.Debug("zip plugin before hook", zap.String("params", params))
+
 	// Parse max tokens from params (e.g., "65535")
 	maxTokens := 65535
 	if params != "" {
@@ -232,33 +235,49 @@ func (z *Zip) Before(params string, p *services.ProviderImpl, r *http.Request, b
 			maxTokens = parsed
 		}
 	}
+	Logger.Debug("zip max tokens configured", zap.Int("maxTokens", maxTokens))
 
 	var req map[string]any
 	if err := json.Unmarshal(body, &req); err != nil {
+		Logger.Debug("zip failed to unmarshal body", zap.Error(err))
 		return body, nil
 	}
 
 	messages, ok := req["messages"].([]any)
 	if !ok || len(messages) == 0 {
+		Logger.Debug("zip no messages found, skipping")
 		return body, nil
 	}
 
 	// Check if we need to compact
 	currentTokens := estimateMessagesTokens(messages)
+	Logger.Debug("zip message stats",
+		zap.Int("messageCount", len(messages)),
+		zap.Int("estimatedTokens", currentTokens))
+
 	if currentTokens <= maxTokens {
+		Logger.Debug("zip under token limit, no compaction needed")
 		return body, nil
 	}
 
 	model, _ := req["model"].(string)
 	if model == "" {
+		Logger.Debug("zip no model specified, skipping")
 		return body, nil
 	}
+	Logger.Debug("zip using model", zap.String("model", model))
 
 	// Extract message parts
 	systemMsgs, compactable, lastInput, firstUser := z.extractMessages(messages)
+	Logger.Debug("zip extracted messages",
+		zap.Int("system", len(systemMsgs)),
+		zap.Int("compactable", len(compactable)),
+		zap.Int("lastInput", len(lastInput)),
+		zap.Int("firstUser", len(firstUser)))
 
 	// Nothing to compact
 	if len(compactable) == 0 {
+		Logger.Debug("zip nothing to compact")
 		return body, nil
 	}
 
@@ -268,18 +287,29 @@ func (z *Zip) Before(params string, p *services.ProviderImpl, r *http.Request, b
 
 	if !z.DisableCache {
 		cacheKey = hashMessages(compactable)
+		Logger.Debug("zip cache lookup", zap.String("cacheKey", cacheKey))
 		if cached, ok := compactionCache.Load(cacheKey); ok {
+			Logger.Debug("zip cache HIT")
 			compactedMessages = cached.([]any)
+		} else {
+			Logger.Debug("zip cache MISS")
 		}
+	} else {
+		Logger.Debug("zip cache disabled")
 	}
 
 	// Need to generate summary
 	if compactedMessages == nil {
+		Logger.Debug("zip generating summary")
 		summary, err := z.doSummarize(p, r, compactable, model)
 		if err != nil {
+			Logger.Debug("zip summarization failed", zap.Error(err))
 			// On error, return original body - don't break the request
 			return body, nil
 		}
+		Logger.Debug("zip summary generated",
+			zap.Int("summaryLength", len(summary)),
+			zap.String("preview", truncateString(summary, 200)))
 
 		// Create compacted message
 		compactedMessages = []any{
@@ -295,6 +325,7 @@ func (z *Zip) Before(params string, p *services.ProviderImpl, r *http.Request, b
 
 		// Cache the result
 		if !z.DisableCache && cacheKey != "" {
+			Logger.Debug("zip storing in cache")
 			compactionCache.Store(cacheKey, compactedMessages)
 		}
 	}
@@ -306,9 +337,24 @@ func (z *Zip) Before(params string, p *services.ProviderImpl, r *http.Request, b
 	newMessages = append(newMessages, compactedMessages...)
 	newMessages = append(newMessages, lastInput...)
 
+	newTokens := estimateMessagesTokens(newMessages)
+	Logger.Debug("zip compaction complete",
+		zap.Int("oldMessages", len(messages)),
+		zap.Int("newMessages", len(newMessages)),
+		zap.Int("oldTokens", currentTokens),
+		zap.Int("newTokens", newTokens))
+
 	req["messages"] = newMessages
 
 	return json.Marshal(req)
+}
+
+// truncateString truncates a string to maxLen chars, adding "..." if truncated
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }
 
 func (z *Zip) After(params string, p *services.ProviderImpl, r *http.Request, body []byte, hres *http.Response, res map[string]any) (map[string]any, error) {

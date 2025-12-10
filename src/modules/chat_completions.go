@@ -73,6 +73,25 @@ func (m *ChatCompletionsModule) Provision(ctx caddy.Context) error {
 	return nil
 }
 
+// setDebugHeaders adds debug headers with provider, model, and plugin information
+func (m *ChatCompletionsModule) setDebugHeaders(hdr http.Header, providerName, realModel string, plugins [][2]string) {
+	hdr.Set("X-Real-Provider-Id", providerName)
+	hdr.Set("X-Real-Model-Id", realModel)
+
+	// Build plugins list with args
+	if len(plugins) > 0 {
+		pluginStrs := make([]string, 0, len(plugins))
+		for _, p := range plugins {
+			if p[1] != "" {
+				pluginStrs = append(pluginStrs, p[0]+":"+p[1])
+			} else {
+				pluginStrs = append(pluginStrs, p[0])
+			}
+		}
+		hdr.Set("X-Plugins-Executed", strings.Join(pluginStrs, ", "))
+	}
+}
+
 func (m *ChatCompletionsModule) resolvePlugins(r *http.Request, reqJson map[string]any) [][2]string {
 	// Pre-allocate with capacity for mandatory plugins + estimated extras
 	result := make([][2]string, len(m.mandatoryPlugins), len(m.mandatoryPlugins)+4)
@@ -126,7 +145,7 @@ func (m *ChatCompletionsModule) resolvePlugins(r *http.Request, reqJson map[stri
 	return result
 }
 
-func (m *ChatCompletionsModule) serveChatCompletions(p *ProviderDef, cmd commands.ChatCompletionsCommand, body []byte, plugins [][2]string, w http.ResponseWriter, r *http.Request) error {
+func (m *ChatCompletionsModule) serveChatCompletions(p *ProviderDef, cmd commands.ChatCompletionsCommand, body []byte, plugins [][2]string, realModel string, w http.ResponseWriter, r *http.Request) error {
 	hres, res, err := cmd.DoChatCompletions(&p.impl, body, r)
 	if err != nil {
 		m.logger.Error("chat completions error", zap.String("provider", p.Name), zap.Error(err))
@@ -149,7 +168,9 @@ func (m *ChatCompletionsModule) serveChatCompletions(p *ProviderDef, cmd command
 		return err
 	}
 
-	w.Header().Set("Content-Type", "application/json")
+	hdr := w.Header()
+	hdr.Set("Content-Type", "application/json")
+	m.setDebugHeaders(hdr, p.Name, realModel, plugins)
 	if _, err := w.Write(data); err != nil {
 		m.logger.Error("chat completions error", zap.String("provider", p.Name), zap.Error(err))
 		return err
@@ -158,8 +179,9 @@ func (m *ChatCompletionsModule) serveChatCompletions(p *ProviderDef, cmd command
 	return nil
 }
 
-func (m *ChatCompletionsModule) serveChatCompletionsStream(p *ProviderDef, cmd commands.ChatCompletionsCommand, body []byte, plugins [][2]string, w http.ResponseWriter, r *http.Request) error {
+func (m *ChatCompletionsModule) serveChatCompletionsStream(p *ProviderDef, cmd commands.ChatCompletionsCommand, body []byte, plugins [][2]string, realModel string, w http.ResponseWriter, r *http.Request) error {
 	sseWriter := sse.NewWriter(w)
+	m.setDebugHeaders(sseWriter.Header(), p.Name, realModel, plugins)
 
 	if err := sseWriter.WriteHeartbeat("ok"); err != nil {
 		return err
@@ -279,8 +301,11 @@ func (m *ChatCompletionsModule) ServeHTTP(w http.ResponseWriter, r *http.Request
 			return nil
 		}
 
+		// Extract final model from request body after plugins
+		realModel, _ := xreqJson["model"].(string)
+
 		if xreqJson["stream"] == true {
-			err = m.serveChatCompletionsStream(p, cmd, xreqBody, plugins, w, r)
+			err = m.serveChatCompletionsStream(p, cmd, xreqBody, plugins, realModel, w, r)
 			if err != nil {
 				if displayErr == nil {
 					displayErr = err
@@ -288,7 +313,7 @@ func (m *ChatCompletionsModule) ServeHTTP(w http.ResponseWriter, r *http.Request
 				continue
 			}
 		} else {
-			err = m.serveChatCompletions(p, cmd, xreqBody, plugins, w, r)
+			err = m.serveChatCompletions(p, cmd, xreqBody, plugins, realModel, w, r)
 			if err != nil {
 				if displayErr == nil {
 					displayErr = err
