@@ -53,13 +53,14 @@ func (*ChatCompletionsModule) CaddyModule() caddy.ModuleInfo {
 
 func (m *ChatCompletionsModule) Provision(ctx caddy.Context) error {
 	m.plugins = map[string]ccp.ChatCompletionsPlugin{
-		"posthog": &ccp.Posthog{}, // observability
-		"models":  &ccp.Models{},  // model name mapping
-		"fuzz":    &ccp.Fuzz{},    // fuzzy search for model name
-		/*"zip":     &ccp.Zip{},      // zip(max_context_len)
-		"zipc":    &ccp.Zip{},      // zip with caption (preserve first)
-		"zips":    &ccp.Zip{},      // zip with summary (summarize + last2)
-		"ai18n":   &ccp.AI18n{},    // auto-translate input and output to/from english
+		"posthog": &ccp.Posthog{},                                    // observability
+		"models":  &ccp.Models{},                                     // model name mapping
+		"fuzz":    &ccp.Fuzz{},                                       // fuzzy search for model name
+		"zip":     &ccp.Zip{},                                        // auto-compact when context exceeds limit
+		"zipc":    &ccp.Zip{PreserveFirst: true},                     // zip + preserve first user message
+		"zips":    &ccp.Zip{DisableCache: true},                      // zip without cache (recompact each time)
+		"zipsc":   &ccp.Zip{PreserveFirst: true, DisableCache: true}, // preserve first + no cache
+		/*"ai18n":   &ccp.AI18n{},    // auto-translate input and output to/from english
 		"optim":   &ccp.Optimize{}, // optimize first prompt for model
 		"codemode":   &ccp.TSTools{},  // call tools in a mcp -> .ts way*/
 	}

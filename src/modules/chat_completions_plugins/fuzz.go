@@ -27,7 +27,7 @@ func (f *Fuzz) Before(params string, p *services.ProviderImpl, r *http.Request, 
 		return json.Marshal(req)
 	}
 
-	if p.Commands == nil || len(p.Commands) == 0 {
+	if len(p.Commands) == 0 {
 		return body, nil
 	}
 
