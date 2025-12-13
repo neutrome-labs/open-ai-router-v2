@@ -117,6 +117,8 @@ func (m *AnthropicMessagesModule) serveMessages(
 	hres, res, err := cmd.DoMessages(&p.impl, providerReq, r)
 	if err != nil {
 		m.logger.Error("messages error", zap.String("provider", p.Name), zap.Error(err))
+		// Run error plugins to notify about the failure
+		_ = chain.RunError(&p.impl, r, req, hres, err)
 		return err
 	}
 
@@ -187,6 +189,8 @@ func (m *AnthropicMessagesModule) serveMessagesStream(
 	hres, stream, err := cmd.DoMessagesStream(&p.impl, providerReq, r)
 	if err != nil {
 		m.logger.Error("messages stream error", zap.String("provider", p.Name), zap.Error(err))
+		// Run error plugins to notify about the failure
+		_ = chain.RunError(&p.impl, r, req, hres, err)
 		_ = sseWriter.WriteError("start failed")
 		_ = sseWriter.WriteDone()
 		return err
@@ -198,7 +202,8 @@ func (m *AnthropicMessagesModule) serveMessagesStream(
 	for chunk := range stream {
 		if chunk.RuntimeError != nil {
 			_ = sseWriter.WriteError(chunk.RuntimeError.Error())
-			_ = chain.RunStreamEnd(&p.impl, r, req, hres, lastChunk)
+			// Run error plugins for runtime stream errors
+			_ = chain.RunError(&p.impl, r, req, hres, chunk.RuntimeError)
 			return nil
 		}
 

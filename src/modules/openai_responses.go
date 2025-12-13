@@ -118,6 +118,8 @@ func (m *OpenAIResponsesModule) serveResponses(
 	hres, res, err := cmd.DoResponses(&p.impl, providerReq, r)
 	if err != nil {
 		m.logger.Error("responses error", zap.String("provider", p.Name), zap.Error(err))
+		// Run error plugins to notify about the failure
+		_ = chain.RunError(&p.impl, r, req, hres, err)
 		return err
 	}
 
@@ -188,6 +190,8 @@ func (m *OpenAIResponsesModule) serveResponsesStream(
 	hres, stream, err := cmd.DoResponsesStream(&p.impl, providerReq, r)
 	if err != nil {
 		m.logger.Error("responses stream error", zap.String("provider", p.Name), zap.Error(err))
+		// Run error plugins to notify about the failure
+		_ = chain.RunError(&p.impl, r, req, hres, err)
 		_ = sseWriter.WriteError("start failed")
 		_ = sseWriter.WriteDone()
 		return err
@@ -199,7 +203,8 @@ func (m *OpenAIResponsesModule) serveResponsesStream(
 	for chunk := range stream {
 		if chunk.RuntimeError != nil {
 			_ = sseWriter.WriteError(chunk.RuntimeError.Error())
-			_ = chain.RunStreamEnd(&p.impl, r, req, hres, lastChunk)
+			// Run error plugins for runtime stream errors
+			_ = chain.RunError(&p.impl, r, req, hres, chunk.RuntimeError)
 			return nil
 		}
 

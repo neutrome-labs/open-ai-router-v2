@@ -31,7 +31,6 @@ func init() {
 
 	// OpenAI Chat Completions (input style)
 	caddy.RegisterModule(&OpenAIChatCompletionsModule{})
-	httpcaddyfile.RegisterHandlerDirective("ai_chat_completions", ParseOpenAIChatCompletionsModule)
 	httpcaddyfile.RegisterHandlerDirective("ai_openai_chat_completions", ParseOpenAIChatCompletionsModule)
 
 	// OpenAI Responses API (input style)
@@ -46,7 +45,6 @@ func init() {
 	httpcaddyfile.RegisterDirectiveOrder("ai_auth_env", httpcaddyfile.Before, "header")
 	httpcaddyfile.RegisterDirectiveOrder("ai_router", httpcaddyfile.Before, "header")
 	httpcaddyfile.RegisterDirectiveOrder("ai_list_models", httpcaddyfile.Before, "header")
-	httpcaddyfile.RegisterDirectiveOrder("ai_chat_completions", httpcaddyfile.Before, "header")
 	httpcaddyfile.RegisterDirectiveOrder("ai_openai_chat_completions", httpcaddyfile.Before, "header")
 	httpcaddyfile.RegisterDirectiveOrder("ai_openai_responses", httpcaddyfile.Before, "header")
 	httpcaddyfile.RegisterDirectiveOrder("ai_anthropic_messages", httpcaddyfile.Before, "header")

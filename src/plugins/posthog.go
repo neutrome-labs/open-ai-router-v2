@@ -142,7 +142,7 @@ func (p *Posthog) Before(params string, provider *services.ProviderImpl, r *http
 }
 
 func (p *Posthog) After(params string, provider *services.ProviderImpl, r *http.Request, req formats.ManagedRequest, hres *http.Response, res formats.ManagedResponse) (formats.ManagedResponse, error) {
-	p.fireEvent(provider, r, req, hres, res, false)
+	p.fireEvent(provider, r, req, hres, res, false, nil)
 	return res, nil
 }
 
@@ -159,11 +159,16 @@ func (p *Posthog) AfterChunk(params string, provider *services.ProviderImpl, r *
 }
 
 func (p *Posthog) StreamEnd(params string, provider *services.ProviderImpl, r *http.Request, req formats.ManagedRequest, hres *http.Response, lastChunk formats.ManagedResponse) error {
-	p.fireEvent(provider, r, req, hres, lastChunk, true)
+	p.fireEvent(provider, r, req, hres, lastChunk, true, nil)
 	return nil
 }
 
-func (p *Posthog) fireEvent(provider *services.ProviderImpl, r *http.Request, req formats.ManagedRequest, hres *http.Response, res formats.ManagedResponse, isStreaming bool) {
+func (p *Posthog) OnError(params string, provider *services.ProviderImpl, r *http.Request, req formats.ManagedRequest, hres *http.Response, providerErr error) error {
+	p.fireEvent(provider, r, req, hres, nil, req.IsStreaming(), providerErr)
+	return nil
+}
+
+func (p *Posthog) fireEvent(provider *services.ProviderImpl, r *http.Request, req formats.ManagedRequest, hres *http.Response, res formats.ManagedResponse, isStreaming bool, providerErr error) {
 	ctx := r.Context()
 	traceId, _ := ctx.Value(traceIDKey).(string)
 	startTime, _ := ctx.Value(posthogTimeStartKey).(time.Time)
@@ -185,16 +190,24 @@ func (p *Posthog) fireEvent(provider *services.ProviderImpl, r *http.Request, re
 	var errorMessage string
 	httpStatus := 0
 
+	// Check for explicit provider error first
+	if providerErr != nil {
+		isError = true
+		errorMessage = providerErr.Error()
+	}
+
 	if hres != nil {
 		httpStatus = hres.StatusCode
 		if httpStatus >= 400 {
 			isError = true
 		}
-	} else {
+	} else if providerErr != nil {
+		// No response but we have an error - likely network/connection failure
 		isError = true
 	}
 
-	if res == nil {
+	if res == nil && providerErr == nil {
+		// No response and no explicit error - something unexpected happened
 		isError = true
 	}
 

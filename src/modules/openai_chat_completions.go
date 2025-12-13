@@ -158,6 +158,8 @@ func (m *OpenAIChatCompletionsModule) serveChatCompletions(
 	hres, res, err := cmd.DoChatCompletions(&p.impl, providerReq, r)
 	if err != nil {
 		m.logger.Error("chat completions error", zap.String("provider", p.Name), zap.Error(err))
+		// Run error plugins to notify about the failure
+		_ = chain.RunError(&p.impl, r, req, hres, err)
 		return err
 	}
 
@@ -231,6 +233,8 @@ func (m *OpenAIChatCompletionsModule) serveChatCompletionsStream(
 	hres, stream, err := cmd.DoChatCompletionsStream(&p.impl, providerReq, r)
 	if err != nil {
 		m.logger.Error("chat completions stream error (start)", zap.String("provider", p.Name), zap.Error(err))
+		// Run error plugins to notify about the failure
+		_ = chain.RunError(&p.impl, r, req, hres, err)
 		_ = sseWriter.WriteError("start failed")
 		_ = sseWriter.WriteDone()
 		return err
@@ -242,7 +246,8 @@ func (m *OpenAIChatCompletionsModule) serveChatCompletionsStream(
 	for chunk := range stream {
 		if chunk.RuntimeError != nil {
 			_ = sseWriter.WriteError(chunk.RuntimeError.Error())
-			_ = chain.RunStreamEnd(&p.impl, r, req, hres, lastChunk)
+			// Run error plugins for runtime stream errors
+			_ = chain.RunError(&p.impl, r, req, hres, chunk.RuntimeError)
 			return nil
 		}
 

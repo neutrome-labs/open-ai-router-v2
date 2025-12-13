@@ -51,12 +51,22 @@ type StreamEndPlugin interface {
 	StreamEnd(params string, p *services.ProviderImpl, r *http.Request, req formats.ManagedRequest, hres *http.Response, lastChunk formats.ManagedResponse) error
 }
 
+// ErrorPlugin handles errors from provider calls
+type ErrorPlugin interface {
+	Plugin
+	// OnError is called when a provider call fails
+	// hres may be nil if the error occurred before receiving a response
+	// providerErr is the error returned by the provider
+	OnError(params string, p *services.ProviderImpl, r *http.Request, req formats.ManagedRequest, hres *http.Response, providerErr error) error
+}
+
 // FullPlugin implements all plugin interfaces
 type FullPlugin interface {
 	BeforePlugin
 	AfterPlugin
 	StreamChunkPlugin
 	StreamEndPlugin
+	ErrorPlugin
 }
 
 // PluginInstance represents a plugin with its parameters
@@ -174,6 +184,30 @@ func (c *PluginChain) RunStreamEnd(p *services.ProviderImpl, r *http.Request, re
 	}
 	if Logger != nil {
 		Logger.Debug("RunStreamEnd completed")
+	}
+	return nil
+}
+
+// RunError executes all ErrorPlugin implementations
+func (c *PluginChain) RunError(p *services.ProviderImpl, r *http.Request, req formats.ManagedRequest, hres *http.Response, providerErr error) error {
+	if Logger != nil {
+		Logger.Debug("RunError starting", zap.Int("plugin_count", len(c.plugins)), zap.Error(providerErr))
+	}
+	for _, pi := range c.plugins {
+		if ep, ok := pi.Plugin.(ErrorPlugin); ok {
+			if Logger != nil {
+				Logger.Debug("Running Error plugin", zap.String("plugin", pi.Plugin.Name()), zap.String("params", pi.Params))
+			}
+			if err := ep.OnError(pi.Params, p, r, req, hres, providerErr); err != nil {
+				if Logger != nil {
+					Logger.Error("Error plugin failed", zap.String("plugin", pi.Plugin.Name()), zap.Error(err))
+				}
+				// Don't return - continue running other error plugins
+			}
+		}
+	}
+	if Logger != nil {
+		Logger.Debug("RunError completed")
 	}
 	return nil
 }
