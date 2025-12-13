@@ -1,4 +1,4 @@
-package chatcompletionsplugins
+package plugins
 
 import (
 	"bytes"
@@ -12,7 +12,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/neutrome-labs/open-ai-router-v2/src/services"
+	"github.com/neutrome-labs/open-ai-router/src/formats"
+	"github.com/neutrome-labs/open-ai-router/src/services"
 	"go.uber.org/zap"
 )
 
@@ -28,7 +29,7 @@ type Zip struct {
 }
 
 // compactionCache stores mapping from original messages hash to compacted messages
-var compactionCache sync.Map // map[string][]map[string]any
+var compactionCache sync.Map // map[string][]formats.Message
 
 // summaryPrompt is the system prompt used to summarize conversations
 const summaryPrompt = `You are a conversation summarizer. Your task is to create a concise but comprehensive summary of the conversation history provided.
@@ -41,20 +42,27 @@ Requirements:
 - Format as a clear, readable summary paragraph or bullet points
 - Do NOT include any preamble like "Here's a summary" - just output the summary directly`
 
+func (z *Zip) Name() string {
+	if z.PreserveFirst && z.DisableCache {
+		return "zipsc"
+	} else if z.PreserveFirst {
+		return "zipc"
+	} else if z.DisableCache {
+		return "zips"
+	}
+	return "zip"
+}
+
 // estimateTokens provides a rough token count estimate (avg 4 chars per token)
 func estimateTokens(text string) int {
 	return (len(text) + 3) / 4
 }
 
 // estimateMessagesTokens estimates total tokens in messages array
-func estimateMessagesTokens(messages []any) int {
+func estimateMessagesTokens(messages []formats.Message) int {
 	total := 0
 	for _, msg := range messages {
-		msgMap, ok := msg.(map[string]any)
-		if !ok {
-			continue
-		}
-		if content, ok := msgMap["content"].(string); ok {
+		if content, ok := msg.Content.(string); ok {
 			total += estimateTokens(content)
 		}
 		// Add overhead for role, etc.
@@ -64,14 +72,14 @@ func estimateMessagesTokens(messages []any) int {
 }
 
 // hashMessages creates a deterministic hash of messages for caching
-func hashMessages(messages []any) string {
+func hashMessages(messages []formats.Message) string {
 	data, _ := json.Marshal(messages)
 	hash := sha256.Sum256(data)
 	return hex.EncodeToString(hash[:16]) // use first 16 bytes
 }
 
 // extractMessages separates system messages, compactable messages, and the last user message
-func (z *Zip) extractMessages(messages []any) (system []any, compactable []any, lastInput []any, firstUser []any) {
+func (z *Zip) extractMessages(messages []formats.Message) (system []formats.Message, compactable []formats.Message, lastInput []formats.Message, firstUser []formats.Message) {
 	if len(messages) == 0 {
 		return nil, nil, nil, nil
 	}
@@ -79,11 +87,7 @@ func (z *Zip) extractMessages(messages []any) (system []any, compactable []any, 
 	// Extract system messages from the beginning
 	idx := 0
 	for idx < len(messages) {
-		msg, ok := messages[idx].(map[string]any)
-		if !ok {
-			break
-		}
-		if msg["role"] != "system" {
+		if messages[idx].Role != "system" {
 			break
 		}
 		system = append(system, messages[idx])
@@ -97,8 +101,7 @@ func (z *Zip) extractMessages(messages []any) (system []any, compactable []any, 
 
 	// Extract first user message if PreserveFirst is set
 	if z.PreserveFirst && len(remaining) > 0 {
-		msg, ok := remaining[0].(map[string]any)
-		if ok && msg["role"] == "user" {
+		if remaining[0].Role == "user" {
 			firstUser = append(firstUser, remaining[0])
 			remaining = remaining[1:]
 		}
@@ -110,54 +113,48 @@ func (z *Zip) extractMessages(messages []any) (system []any, compactable []any, 
 
 	// Last message(s) to preserve - find the last user message and any following assistant response
 	lastIdx := len(remaining) - 1
-	lastMsg, ok := remaining[lastIdx].(map[string]any)
-	if ok {
-		if lastMsg["role"] == "user" {
-			lastInput = []any{remaining[lastIdx]}
-			compactable = remaining[:lastIdx]
-		} else if lastMsg["role"] == "assistant" && lastIdx > 0 {
-			// Keep last user + assistant pair
-			prevMsg, ok := remaining[lastIdx-1].(map[string]any)
-			if ok && prevMsg["role"] == "user" {
-				lastInput = remaining[lastIdx-1:]
-				compactable = remaining[:lastIdx-1]
-			} else {
-				lastInput = []any{remaining[lastIdx]}
-				compactable = remaining[:lastIdx]
-			}
+	lastMsg := remaining[lastIdx]
+
+	if lastMsg.Role == "user" {
+		lastInput = []formats.Message{remaining[lastIdx]}
+		compactable = remaining[:lastIdx]
+	} else if lastMsg.Role == "assistant" && lastIdx > 0 {
+		// Keep last user + assistant pair
+		prevMsg := remaining[lastIdx-1]
+		if prevMsg.Role == "user" {
+			lastInput = remaining[lastIdx-1:]
+			compactable = remaining[:lastIdx-1]
 		} else {
-			lastInput = []any{remaining[lastIdx]}
+			lastInput = []formats.Message{remaining[lastIdx]}
 			compactable = remaining[:lastIdx]
 		}
+	} else {
+		lastInput = []formats.Message{remaining[lastIdx]}
+		compactable = remaining[:lastIdx]
 	}
 
 	return system, compactable, lastInput, firstUser
 }
 
 // doSummarize calls the AI to summarize the conversation
-func (z *Zip) doSummarize(p *services.ProviderImpl, r *http.Request, messages []any, model string) (string, error) {
+func (z *Zip) doSummarize(p *services.ProviderImpl, r *http.Request, messages []formats.Message, model string) (string, error) {
 	// Build conversation text for summarization
 	var convBuilder strings.Builder
 	for _, msg := range messages {
-		msgMap, ok := msg.(map[string]any)
-		if !ok {
-			continue
-		}
-		role, _ := msgMap["role"].(string)
-		content, _ := msgMap["content"].(string)
-		convBuilder.WriteString(fmt.Sprintf("[%s]: %s\n\n", role, content))
+		content, _ := msg.Content.(string)
+		convBuilder.WriteString(fmt.Sprintf("[%s]: %s\n\n", msg.Role, content))
 	}
 
-	summaryReq := map[string]any{
-		"model": model,
-		"messages": []map[string]any{
-			{"role": "system", "content": summaryPrompt},
-			{"role": "user", "content": "Please summarize this conversation:\n\n" + convBuilder.String()},
+	summaryReq := &formats.OpenAIChatRequest{
+		Model: model,
+		Messages: []formats.Message{
+			{Role: "system", Content: summaryPrompt},
+			{Role: "user", Content: "Please summarize this conversation:\n\n" + convBuilder.String()},
 		},
-		"max_tokens": 2048,
+		MaxTokens: 2048,
 	}
 
-	reqBody, err := json.Marshal(summaryReq)
+	reqBody, err := summaryReq.ToJSON()
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal summary request: %w", err)
 	}
@@ -197,36 +194,36 @@ func (z *Zip) doSummarize(p *services.ProviderImpl, r *http.Request, messages []
 		return "", fmt.Errorf("summarization failed: %s", string(respData))
 	}
 
-	var result map[string]any
+	var result formats.OpenAIChatResponse
 	if err := json.Unmarshal(respData, &result); err != nil {
 		return "", fmt.Errorf("failed to parse summary response: %w", err)
 	}
 
-	choices, ok := result["choices"].([]any)
-	if !ok || len(choices) == 0 {
+	choices := result.GetChoices()
+	if len(choices) == 0 {
 		return "", fmt.Errorf("no choices in summary response")
 	}
 
-	choice, ok := choices[0].(map[string]any)
-	if !ok {
-		return "", fmt.Errorf("invalid choice format")
-	}
-
-	message, ok := choice["message"].(map[string]any)
-	if !ok {
-		return "", fmt.Errorf("invalid message format")
-	}
-
-	content, ok := message["content"].(string)
-	if !ok {
-		return "", fmt.Errorf("invalid content format")
+	content, _ := choices[0].Message.Content.(string)
+	if content == "" {
+		return "", fmt.Errorf("empty content in summary response")
 	}
 
 	return content, nil
 }
 
-func (z *Zip) Before(params string, p *services.ProviderImpl, r *http.Request, body []byte) ([]byte, error) {
-	Logger.Debug("zip plugin before hook", zap.String("params", params))
+func (z *Zip) Before(params string, p *services.ProviderImpl, r *http.Request, req formats.ManagedRequest) (formats.ManagedRequest, error) {
+	// Zip requires a provider to call summarization - skip if not provided
+	if p == nil {
+		if Logger != nil {
+			Logger.Debug("zip plugin skipped - no provider context")
+		}
+		return req, nil
+	}
+
+	if Logger != nil {
+		Logger.Debug("zip plugin before hook", zap.String("params", params))
+	}
 
 	// Parse max tokens from params (e.g., "65535")
 	maxTokens := 65535
@@ -235,118 +232,146 @@ func (z *Zip) Before(params string, p *services.ProviderImpl, r *http.Request, b
 			maxTokens = parsed
 		}
 	}
-	Logger.Debug("zip max tokens configured", zap.Int("maxTokens", maxTokens))
-
-	var req map[string]any
-	if err := json.Unmarshal(body, &req); err != nil {
-		Logger.Debug("zip failed to unmarshal body", zap.Error(err))
-		return body, nil
+	if Logger != nil {
+		Logger.Debug("zip max tokens configured", zap.Int("maxTokens", maxTokens))
 	}
 
-	messages, ok := req["messages"].([]any)
-	if !ok || len(messages) == 0 {
-		Logger.Debug("zip no messages found, skipping")
-		return body, nil
+	messages := req.GetMessages()
+	if len(messages) == 0 {
+		if Logger != nil {
+			Logger.Debug("zip no messages found, skipping")
+		}
+		return req, nil
 	}
 
 	// Check if we need to compact
 	currentTokens := estimateMessagesTokens(messages)
-	Logger.Debug("zip message stats",
-		zap.Int("messageCount", len(messages)),
-		zap.Int("estimatedTokens", currentTokens))
+	if Logger != nil {
+		Logger.Debug("zip message stats",
+			zap.Int("messageCount", len(messages)),
+			zap.Int("estimatedTokens", currentTokens))
+	}
 
 	if currentTokens <= maxTokens {
-		Logger.Debug("zip under token limit, no compaction needed")
-		return body, nil
+		if Logger != nil {
+			Logger.Debug("zip under token limit, no compaction needed")
+		}
+		return req, nil
 	}
 
-	model, _ := req["model"].(string)
+	model := req.GetModel()
 	if model == "" {
-		Logger.Debug("zip no model specified, skipping")
-		return body, nil
+		if Logger != nil {
+			Logger.Debug("zip no model specified, skipping")
+		}
+		return req, nil
 	}
-	Logger.Debug("zip using model", zap.String("model", model))
+	if Logger != nil {
+		Logger.Debug("zip using model", zap.String("model", model))
+	}
 
 	// Extract message parts
 	systemMsgs, compactable, lastInput, firstUser := z.extractMessages(messages)
-	Logger.Debug("zip extracted messages",
-		zap.Int("system", len(systemMsgs)),
-		zap.Int("compactable", len(compactable)),
-		zap.Int("lastInput", len(lastInput)),
-		zap.Int("firstUser", len(firstUser)))
+	if Logger != nil {
+		Logger.Debug("zip extracted messages",
+			zap.Int("system", len(systemMsgs)),
+			zap.Int("compactable", len(compactable)),
+			zap.Int("lastInput", len(lastInput)),
+			zap.Int("firstUser", len(firstUser)))
+	}
 
 	// Nothing to compact
 	if len(compactable) == 0 {
-		Logger.Debug("zip nothing to compact")
-		return body, nil
+		if Logger != nil {
+			Logger.Debug("zip nothing to compact")
+		}
+		return req, nil
 	}
 
 	// Check cache first (unless disabled)
-	var compactedMessages []any
+	var compactedMessages []formats.Message
 	cacheKey := ""
 
 	if !z.DisableCache {
 		cacheKey = hashMessages(compactable)
-		Logger.Debug("zip cache lookup", zap.String("cacheKey", cacheKey))
+		if Logger != nil {
+			Logger.Debug("zip cache lookup", zap.String("cacheKey", cacheKey))
+		}
 		if cached, ok := compactionCache.Load(cacheKey); ok {
-			Logger.Debug("zip cache HIT")
-			compactedMessages = cached.([]any)
+			if Logger != nil {
+				Logger.Debug("zip cache HIT")
+			}
+			compactedMessages = cached.([]formats.Message)
 		} else {
-			Logger.Debug("zip cache MISS")
+			if Logger != nil {
+				Logger.Debug("zip cache MISS")
+			}
 		}
 	} else {
-		Logger.Debug("zip cache disabled")
+		if Logger != nil {
+			Logger.Debug("zip cache disabled")
+		}
 	}
 
 	// Need to generate summary
 	if compactedMessages == nil {
-		Logger.Debug("zip generating summary")
+		if Logger != nil {
+			Logger.Debug("zip generating summary")
+		}
 		summary, err := z.doSummarize(p, r, compactable, model)
 		if err != nil {
-			Logger.Debug("zip summarization failed", zap.Error(err))
+			if Logger != nil {
+				Logger.Debug("zip summarization failed", zap.Error(err))
+			}
 			// On error, return original body - don't break the request
-			return body, nil
+			return req, nil
 		}
-		Logger.Debug("zip summary generated",
-			zap.Int("summaryLength", len(summary)),
-			zap.String("preview", truncateString(summary, 200)))
+		if Logger != nil {
+			Logger.Debug("zip summary generated",
+				zap.Int("summaryLength", len(summary)),
+				zap.String("preview", truncateString(summary, 200)))
+		}
 
 		// Create compacted message
-		compactedMessages = []any{
-			map[string]any{
-				"role":    "user",
-				"content": "[Previous conversation summary]\n" + summary,
+		compactedMessages = []formats.Message{
+			{
+				Role:    "user",
+				Content: "[Previous conversation summary]\n" + summary,
 			},
-			map[string]any{
-				"role":    "assistant",
-				"content": "I understand. I have the context from our previous conversation. Please continue.",
+			{
+				Role:    "assistant",
+				Content: "I understand. I have the context from our previous conversation. Please continue.",
 			},
 		}
 
 		// Cache the result
 		if !z.DisableCache && cacheKey != "" {
-			Logger.Debug("zip storing in cache")
+			if Logger != nil {
+				Logger.Debug("zip storing in cache")
+			}
 			compactionCache.Store(cacheKey, compactedMessages)
 		}
 	}
 
 	// Rebuild messages array
-	newMessages := make([]any, 0, len(systemMsgs)+len(firstUser)+len(compactedMessages)+len(lastInput))
+	newMessages := make([]formats.Message, 0, len(systemMsgs)+len(firstUser)+len(compactedMessages)+len(lastInput))
 	newMessages = append(newMessages, systemMsgs...)
 	newMessages = append(newMessages, firstUser...)
 	newMessages = append(newMessages, compactedMessages...)
 	newMessages = append(newMessages, lastInput...)
 
 	newTokens := estimateMessagesTokens(newMessages)
-	Logger.Debug("zip compaction complete",
-		zap.Int("oldMessages", len(messages)),
-		zap.Int("newMessages", len(newMessages)),
-		zap.Int("oldTokens", currentTokens),
-		zap.Int("newTokens", newTokens))
+	if Logger != nil {
+		Logger.Debug("zip compaction complete",
+			zap.Int("oldMessages", len(messages)),
+			zap.Int("newMessages", len(newMessages)),
+			zap.Int("oldTokens", currentTokens),
+			zap.Int("newTokens", newTokens))
+	}
 
-	req["messages"] = newMessages
+	req.SetMessages(newMessages)
 
-	return json.Marshal(req)
+	return req, nil
 }
 
 // truncateString truncates a string to maxLen chars, adding "..." if truncated
@@ -357,6 +382,14 @@ func truncateString(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
-func (z *Zip) After(params string, p *services.ProviderImpl, r *http.Request, body []byte, hres *http.Response, res map[string]any) (map[string]any, error) {
+func (z *Zip) After(params string, p *services.ProviderImpl, r *http.Request, req formats.ManagedRequest, hres *http.Response, res formats.ManagedResponse) (formats.ManagedResponse, error) {
 	return res, nil
+}
+
+func (z *Zip) AfterChunk(params string, p *services.ProviderImpl, r *http.Request, req formats.ManagedRequest, hres *http.Response, chunk formats.ManagedResponse) (formats.ManagedResponse, error) {
+	return chunk, nil
+}
+
+func (z *Zip) StreamEnd(params string, p *services.ProviderImpl, r *http.Request, req formats.ManagedRequest, hres *http.Response, lastChunk formats.ManagedResponse) error {
+	return nil
 }

@@ -1,94 +1,213 @@
-# AI Agent Guidelines for `open-ai-router-v2`
+# AI Agents Guide
 
-This file is for AI coding agents (e.g. Copilot Chat, GPT-based tools) that work on this repository.
+This document provides architectural overview and guidelines for AI agents working on the open-ai-router codebase.
 
----
+## Architecture Overview
 
-## 1. Project Overview (for agents)
+### Core Concepts
 
-- This is a **Go** project that builds a **custom Caddy binary** with additional HTTP handler modules for routing AI/LLM traffic.
-- Main entrypoint is `src/main.go`, which imports:
-  - `src/modules` – Caddy modules (`ai_auth_env`, `ai_router`, `ai_list_models`, `ai_chat_completions`).
-  - `src/drivers/openai` – provider-specific HTTP clients for OpenAI-compatible APIs.
-  - `src/modules/chat_completions_plugins` – plugins applied around chat completions (e.g. `posthog`, `models`, `fuzz`, `zip` variants).
-- Example configuration is in `Caddyfile.example`.
-- Build command (see `Makefile`): `go build -o caddy ./src`.
+**Open AI Router v3** is a Caddy plugin that routes LLM API requests to multiple providers with format conversion and plugin support.
 
-When writing code or docs, **preserve compatibility** with existing Caddy module IDs and directive names.
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              Caddy Server                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  Input Handlers (Modules)                                                    │
+│  ┌─────────────────┐ ┌─────────────────┐ ┌──────────────────────┐           │
+│  │ ai_openai_chat  │ │ ai_openai_      │ │ ai_anthropic_        │           │
+│  │ _completions    │ │ responses       │ │ messages             │           │
+│  └────────┬────────┘ └────────┬────────┘ └──────────┬───────────┘           │
+│           │                   │                      │                       │
+│           └───────────────────┼──────────────────────┘                       │
+│                               ▼                                              │
+│  ┌─────────────────────────────────────────────────────────────────────────┐│
+│  │                        Managed Formats                                   ││
+│  │  Parse JSON once → ManagedRequest → Process → ManagedResponse → JSON    ││
+│  └─────────────────────────────────────────────────────────────────────────┘│
+│                               │                                              │
+│                               ▼                                              │
+│  ┌─────────────────────────────────────────────────────────────────────────┐│
+│  │                         Plugin Chain                                     ││
+│  │  Before → [Provider Call] → After (non-stream) / AfterChunk + StreamEnd ││
+│  └─────────────────────────────────────────────────────────────────────────┘│
+│                               │                                              │
+│                               ▼                                              │
+│  ┌─────────────────────────────────────────────────────────────────────────┐│
+│  │                      Style Converter                                     ││
+│  │  Passthrough if input style == provider style, else convert             ││
+│  └─────────────────────────────────────────────────────────────────────────┘│
+│                               │                                              │
+│                               ▼                                              │
+│  ┌─────────────────────────────────────────────────────────────────────────┐│
+│  │                          Drivers                                         ││
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐                 ││
+│  │  │  OpenAI  │  │ Anthropic│  │  Google  │  │Cloudflare│                 ││
+│  │  └──────────┘  └──────────┘  └──────────┘  └──────────┘                 ││
+│  └─────────────────────────────────────────────────────────────────────────┘│
+└─────────────────────────────────────────────────────────────────────────────┘
+```
 
----
+### Package Structure
 
-## 2. Coding Rules for Agents
+```
+src/
+├── main.go              # Caddy entry point
+├── formats/             # Managed request/response structures
+│   ├── format.go        # Core interfaces (ManagedRequest, ManagedResponse, etc.)
+│   ├── openai_chat.go   # OpenAI Chat Completions format
+│   ├── openai_responses.go  # OpenAI Responses API format
+│   └── anthropic.go     # Anthropic Messages format
+├── styles/              # Style definitions and converters
+│   ├── style.go         # Style constants and utilities
+│   └── converter.go     # Format conversion between styles
+├── services/            # Shared services and implementations
+│   ├── auth_manager.go  # Auth manager interface and registry
+│   ├── router_impl.go   # Router runtime implementation
+│   ├── provider_impl.go # Provider runtime implementation
+│   └── posthog.go       # PostHog observability
+├── plugins/             # Request/response plugins
+│   ├── plugin.go        # Plugin interfaces (Before, After, StreamChunk, StreamEnd)
+│   ├── registry.go      # Plugin registry
+│   ├── posthog.go       # PostHog plugin (with stream accumulation)
+│   ├── models.go        # Model mapping plugin
+│   ├── fuzz.go          # Fuzzy model matching plugin
+│   └── zip.go           # Auto-compaction plugin (zip, zipc, zips, zipsc variants)
+├── drivers/             # Provider-specific API drivers
+│   ├── interfaces.go    # Driver interfaces
+│   ├── openai/          # OpenAI driver
+│   └── anthropic/       # Anthropic driver
+├── modules/             # Caddy HTTP handler modules
+│   ├── init.go          # Module registration
+│   ├── env_auth_manager.go  # ai_auth_env directive
+│   ├── router.go        # ai_router directive
+│   ├── list_models.go   # ai_list_models directive
+│   ├── openai_chat_completions.go   # ai_openai_chat_completions
+│   ├── openai_responses.go          # ai_openai_responses
+│   └── anthropic_messages.go        # ai_anthropic_messages
+└── sse/                 # Server-Sent Events utilities
+    ├── reader.go        # SSE event parser
+    └── writer.go        # SSE event writer
+```
 
-When you modify code in this repo, follow these rules:
+### Key Design Principles (v3)
 
-1. **Use the VS Code tools API**
-   - Use `apply_patch` to edit existing files.
-   - Use `create_file` for new files.
-   - Do not run raw shell commands if a dedicated tool exists for that task.
+1. **Single Serialization**: JSON is parsed once at input, processed as Go structs, serialized once at output. The `extras` map preserves unknown fields for passthrough.
 
-2. **Respect existing architecture**
-   - Do not rename public module IDs (e.g. `http.handlers.ai_router`, `http.handlers.ai_chat_completions`) or Caddy directives (`ai_auth_env`, `ai_router`, `ai_list_models`, `ai_chat_completions`) without explicit user approval.
-   - Keep provider wiring via `services.ProviderImpl` and `RouterModule` intact unless the user asks for a refactor.
-   - `chat_completions` plugins must continue to implement `ChatCompletionsPlugin` from `chat_completions_plugins/plugin.go`.
+2. **Style Passthrough**: When input style matches provider style, requests pass through with minimal modification. Conversion only happens when styles differ.
 
-3. **Keep changes minimal and scoped**
-   - Fix the **root cause** of the issue described by the user, but avoid opportunistic large refactors.
-   - Match existing code style (naming, logging via `zap`, error handling strategy).
-   - Avoid introducing new external dependencies unless requested or clearly justified.
+3. **Per-Provider Plugin Execution**: Plugins are called separately for each provider attempt with an isolated (cloned) copy of the request. This ensures:
+   - Each provider gets a fresh request that plugins can modify independently
+   - Plugin modifications for one provider don't affect subsequent provider attempts
+   - Provider context is available to plugins during the `Before` hook
 
-4. **Safety and behavior**
-   - Do not remove or weaken observability and auth controls (`EnvAuthManagerModule`, PostHog instrumentation) unless explicitly asked.
-   - When changing request/response shapes, be careful not to break OpenAI-compatible semantics.
+4. **Separated Plugin Hooks**:
+   - `Before`: Runs before provider call (modify request) - called per-provider with cloned request
+   - `After`: Runs after non-streaming response
+   - `AfterChunk`: Runs for each streaming chunk
+   - `StreamEnd`: Runs when stream completes (for finalization when no usage data in stream)
 
-5. **Testing and validation**
-   - When you touch runnable code (Go files), prefer to:
-     - At least build the project: `go build ./src/...` or `make build`.
-     - If tests exist in the future, run targeted tests related to changed packages.
-   - If you cannot run tests in this environment, mention that to the user and explain how they can run them locally.
+4. **Provider Styles**: Each provider has a style (openai-chat-completions, openai-responses, anthropic-messages, google-genai, cloudflare). The converter handles transformations between styles.
 
----
+## Supported Styles
 
-## 3. Documentation Rules for Agents
+| Style | Description | Endpoint |
+|-------|-------------|----------|
+| `openai-chat-completions` | OpenAI Chat Completions API (default) | `/v1/chat/completions` |
+| `openai-responses` | OpenAI Responses API | `/v1/responses` |
+| `anthropic-messages` | Anthropic Messages API | `/v1/messages` |
+| `google-genai` | Google Generative AI |  (soon) |
+| `cloudflare-ai-gateway` | Cloudflare AI Gateway |  (soon) |
+| `cloudflare-workers-ai` | Cloudflare Workers AI |  (soon) |
 
-When you add or change behavior that affects how humans use this project (configuration, build, APIs, plugins, environment variables):
+## Adding New Features
 
-- Update or propose updates to **`README.md`** to reflect:
-  - New/changed features.
-  - New/changed environment variables.
-  - New/changed Caddy directives or example configuration.
-- If you change workflows relevant to agents (how they should behave), update or propose updates to **`agents.md`**.
+### Adding a New Provider Style
 
-Keep documentation:
+1. Create format structs in `src/formats/` (implement `ManagedRequest` and `ManagedResponse` interfaces)
+2. Add style constant in `src/styles/style.go`
+3. Implement conversion methods in `src/styles/converter.go`
+4. Create driver in `src/drivers/<provider>/`
+5. Create handler module in `src/modules/`
+6. Register in `src/modules/init.go`
 
-- Concise and task-focused.
-- Accurate with respect to current code and examples (especially `Caddyfile.example`).
+### Adding a New Plugin
 
----
+1. Create plugin file in `src/plugins/`
+2. Implement required interfaces (`BeforePlugin`, `AfterPlugin`, `StreamChunkPlugin`, `StreamEndPlugin`)
+3. Register in `src/plugins/registry.go`
 
-## 4. Required Post-Change Prompt to the User
+### Adding a New Driver
 
-After you complete **any non-trivial coding change** (Go source, Caddyfile semantics, or plugin logic), you **must explicitly ask the user** something like:
+1. Create package under `src/drivers/<provider>/`
+2. Implement relevant command interfaces from `src/drivers/interfaces.go`
+3. Wire into the appropriate module handler
 
-> "I’ve updated the code. Do you want me to also refresh `agents.md` and `README.md` to match these changes?"
+## Important Interfaces
 
-Then:
+### ManagedRequest (formats/format.go)
+```go
+type ManagedRequest interface {
+    GetModel() string
+    SetModel(model string)
+    GetMessages() []Message
+    SetMessages(messages []Message)
+    IsStreaming() bool
+    GetRawExtras() map[string]json.RawMessage
+    SetRawExtras(extras map[string]json.RawMessage)
+    MergeFrom(raw []byte) error
+    Clone() ManagedRequest // Deep copy for isolated plugin processing
+    ToJSON() ([]byte, error)
+}
+```
 
-- If the user says **yes**:
-  - Summarize the behavior changes in 2–4 bullets.
-  - Propose concrete edits to `README.md` and/or `agents.md` and apply them after confirmation (if the user wants to see a preview first, show a short diff or snippet instead of full files).
-- If the user says **no**:
-  - Continue with their requested task, but avoid silently contradicting existing docs.
+### ManagedResponse (formats/format.go)
+```go
+type ManagedResponse interface {
+    GetModel() string
+    GetUsage() *Usage
+    SetUsage(usage *Usage)
+    GetChoices() []Choice
+    IsChunk() bool
+    GetRawExtras() map[string]json.RawMessage
+    ToJSON() ([]byte, error)
+}
+```
 
-This rule is **mandatory** so that human-facing docs and AI-facing guidelines stay aligned with the actual behavior of the router.
+### Plugin Interfaces (plugins/plugin.go)
+```go
+type BeforePlugin interface {
+    // Before is called before the request is sent to each provider (with cloned request)
+    // p contains the provider context, allowing plugins to make provider-specific modifications
+    Before(params string, p *services.ProviderImpl, r *http.Request, req formats.ManagedRequest) (formats.ManagedRequest, error)
+}
 
----
+type AfterPlugin interface {
+    After(params string, p *services.ProviderImpl, r *http.Request, req formats.ManagedRequest, hres *http.Response, resp formats.ManagedResponse) (formats.ManagedResponse, error)
+}
 
-## 5. When Unsure
+type StreamChunkPlugin interface {
+    AfterChunk(params string, p *services.ProviderImpl, r *http.Request, req formats.ManagedRequest, hres *http.Response, chunk formats.ManagedResponse) (formats.ManagedResponse, error)
+}
 
-If repo intent or configuration is ambiguous:
+type StreamEndPlugin interface {
+    StreamEnd(params string, p *services.ProviderImpl, r *http.Request, req formats.ManagedRequest, hres *http.Response, lastChunk formats.ManagedResponse) error
+}
+```
 
-- Prefer **asking a brief clarifying question** over guessing critical behavior (auth, routing, provider selection).
-- When guessing is acceptable (e.g. log message wording, variable naming), keep guesses conservative and reversible.
+## Documentation Maintenance
 
-End of file.
+When making changes to this codebase:
+
+1. **Update README.md** if you change:
+   - Caddyfile directives or their options
+   - Environment variables
+   - Build/run instructions
+   - Public-facing features
+
+2. **Update agents.md** if you change:
+   - Package structure
+   - Core interfaces
+   - Architecture patterns
+   - Adding new styles/drivers/plugins procedures
+
+Always keep both documents in sync with the actual implementation.

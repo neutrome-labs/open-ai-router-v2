@@ -1,58 +1,89 @@
-{
-    order ai_auth_env first
-    order ai_router after ai_auth_env
-}
+http://localhost:9111 {
+	log {
+		output stderr
+		level DEBUG
+	}
 
-http://localhost:3000 {
-    log {
-        output stderr
-        level DEBUG
-    }
+	ai_auth_env {
+		name default
+	}
 
-    ai_auth_env {
-        name default
-    }
+	ai_router {
+		name default
+		auth default
 
-    ai_router {
-        name default
-        auth default
+		provider openrouter {
+			api_base_url "https://openrouter.ai/api/v1"
+		}
 
-        provider openrouter {
-            api_base_url "https://openrouter.ai/api/v1"
-        }
+		provider cf {
+			api_base_url "https://api.cloudflare.com/client/v4/accounts/123456789abc/ai"
+			style "cf"
+		}
+	}
 
-        provider cf {
-            api_base_url "https://api.cloudflare.com/client/v4/accounts/<account_id>/ai"
-            style "cloudflare"
-        }
-    }
+	handle_path /v1/models {
+		route {
+			# CORS
+			header Access-Control-Allow-Origin "*"
+			header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+			header Access-Control-Allow-Headers "Authorization, Content-Type, X-Requested-With, X-CSRF-Token, *"
+			@options method OPTIONS
+			respond @options 204
 
-    handle_path /api/models {
-        route {
-            # CORS
-            header Access-Control-Allow-Origin "*"
-            header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
-            header Access-Control-Allow-Headers "Authorization, Content-Type, X-Requested-With, X-CSRF-Token, *"
-            @options method OPTIONS
-            respond @options 204
+			ai_list_models {
+				router default
+			}
+		}
+	}
 
-            ai_list_models {
-                router default
-            }
-        }
-    }
+	handle_path /v1/chat/completions* {
+		route {
+			header Access-Control-Allow-Origin "*"
+			header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+			header Access-Control-Allow-Headers "Authorization, Content-Type, X-Requested-With, X-CSRF-Token, *"
+			@options method OPTIONS
+			respond @options 204
 
-    handle_path /api/chat/completions* {
-        route {
-            header Access-Control-Allow-Origin "*"
-            header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
-            header Access-Control-Allow-Headers "Authorization, Content-Type, X-Requested-With, X-CSRF-Token, *"
-            @options method OPTIONS
-            respond @options 204
+			ai_openai_chat_completions {
+				router default
+			}
+		}
+	}
 
-            ai_chat_completions {
-                router default
-            }
-        }
-    }
+	handle_path /v1/responses* {
+		route {
+			header Access-Control-Allow-Origin "*"
+			header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+			header Access-Control-Allow-Headers "Authorization, Content-Type, X-Requested-With, X-CSRF-Token, *"
+			@options method OPTIONS
+			respond @options 204
+
+			ai_openai_responses {
+				router default
+			}
+		}
+	}
+
+	handle_path /v1/messages* {
+		route {
+			header Access-Control-Allow-Origin "*"
+			header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+			header Access-Control-Allow-Headers "Authorization, Content-Type, X-Requested-With, X-CSRF-Token, *"
+			@options method OPTIONS
+			respond @options 204
+
+			ai_anthropic_messages {
+				router default
+			}
+		}
+	}
+	
+	handle_path /health {
+		respond "OK"
+	}
+
+	handle_path /* {
+		respond "Not Found" 404
+	}
 }

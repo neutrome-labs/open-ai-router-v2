@@ -6,18 +6,24 @@ import (
 	"github.com/posthog/posthog-go"
 )
 
-var posthogEndpoint = os.Getenv("POSTHOG_BASE_URL")
-var posthogAPIKey = os.Getenv("POSTHOG_API_KEY")
-var PosthogIncludeContent = os.Getenv("POSTHOG_INCLUDE_CONTENT") == "true"
-
 var posthogClient posthog.Client
 
+// PosthogIncludeContent controls whether to include message content in observability events
+var PosthogIncludeContent = os.Getenv("POSTHOG_INCLUDE_CONTENT") == "true"
+
+// TryInstrumentAppObservability initializes PostHog if configured
 func TryInstrumentAppObservability() bool {
-	if posthogAPIKey == "" {
+	key := os.Getenv("POSTHOG_API_KEY")
+	if key == "" {
 		return false
 	}
 
-	client, err := posthog.NewWithConfig(posthogAPIKey, posthog.Config{Endpoint: posthogEndpoint})
+	baseURL := os.Getenv("POSTHOG_BASE_URL")
+	if baseURL == "" {
+		baseURL = "https://app.posthog.com"
+	}
+
+	client, err := posthog.NewWithConfig(key, posthog.Config{Endpoint: baseURL})
 	if err != nil {
 		return false
 	}
@@ -26,6 +32,7 @@ func TryInstrumentAppObservability() bool {
 	return true
 }
 
+// FireObservabilityEvent sends an event to PostHog
 func FireObservabilityEvent(userId, url, eventName string, properties map[string]any) error {
 	if posthogClient == nil {
 		return nil

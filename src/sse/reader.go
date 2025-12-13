@@ -1,3 +1,4 @@
+// Package sse provides Server-Sent Events reader and writer utilities.
 package sse
 
 import (

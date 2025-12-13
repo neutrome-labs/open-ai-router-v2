@@ -8,11 +8,11 @@ import (
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
-	"github.com/neutrome-labs/open-ai-router-v2/src/commands"
+	"github.com/neutrome-labs/open-ai-router/src/drivers"
 	"go.uber.org/zap"
 )
 
-// ListModelsModule serves aggregated models under any path.
+// ListModelsModule aggregates models from all configured providers.
 type ListModelsModule struct {
 	RouterName string `json:"router,omitempty"`
 	logger     *zap.Logger
@@ -56,7 +56,7 @@ func (m *ListModelsModule) ServeHTTP(w http.ResponseWriter, r *http.Request, nex
 		return nil
 	}
 
-	models := make([]commands.ListModelsModel, 0)
+	models := make([]drivers.ListModelsModel, 0)
 	for _, name := range router.ProviderOrder {
 		p := router.Providers[name]
 		if p == nil {
@@ -64,16 +64,17 @@ func (m *ListModelsModule) ServeHTTP(w http.ResponseWriter, r *http.Request, nex
 			continue
 		}
 
-		if p.impl.Commands == nil || len(p.impl.Commands) == 0 {
+		if len(p.impl.Commands) == 0 {
 			m.logger.Warn("Provider commands is nil or empty", zap.String("name", name))
 			continue
 		}
 
-		if _, ok := p.impl.Commands["list_models"]; !ok {
+		listCmd, ok := p.impl.Commands["list_models"]
+		if !ok {
 			continue
 		}
 
-		cmd, ok := p.impl.Commands["list_models"].(commands.ListModelsCommand)
+		cmd, ok := listCmd.(drivers.ListModelsCommand)
 		if !ok {
 			continue
 		}
@@ -84,11 +85,14 @@ func (m *ListModelsModule) ServeHTTP(w http.ResponseWriter, r *http.Request, nex
 			continue
 		}
 
-		for i := range xmodels {
-			xmodels[i].ID = strings.ToLower(p.Name) + "/" + xmodels[i].ID
+		for _, xm := range xmodels {
+			models = append(models, drivers.ListModelsModel{
+				Object:  "model",
+				ID:      strings.ToLower(p.Name) + "/" + xm.ID,
+				Name:    xm.Name,
+				OwnedBy: p.Name,
+			})
 		}
-
-		models = append(models, xmodels...)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

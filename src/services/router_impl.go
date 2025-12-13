@@ -6,6 +6,7 @@ import (
 	"go.uber.org/zap"
 )
 
+// RouterImpl provides the runtime implementation for a router
 type RouterImpl struct {
 	Name        string
 	AuthManager AuthManager

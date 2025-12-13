@@ -11,17 +11,21 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
-	"github.com/neutrome-labs/open-ai-router-v2/src/drivers/openai"
-	"github.com/neutrome-labs/open-ai-router-v2/src/services"
+	"github.com/neutrome-labs/open-ai-router/src/drivers/anthropic"
+	"github.com/neutrome-labs/open-ai-router/src/drivers/openai"
+	"github.com/neutrome-labs/open-ai-router/src/services"
+	"github.com/neutrome-labs/open-ai-router/src/styles"
 	"go.uber.org/zap"
 )
 
-var routerRegistry sync.Map // map[string]*RouterModule
+var routerRegistry sync.Map
 
+// RegisterRouter registers a router by name
 func RegisterRouter(name string, m *RouterModule) {
 	routerRegistry.Store(strings.ToLower(name), m)
 }
 
+// GetRouter retrieves a router by name
 func GetRouter(name string) (*RouterModule, bool) {
 	if strings.TrimSpace(name) == "" {
 		name = "default"
@@ -34,6 +38,7 @@ func GetRouter(name string) (*RouterModule, bool) {
 	return nil, false
 }
 
+// RouterModule configures providers and routing rules for AI models.
 type RouterModule struct {
 	Name                    string                  `json:"name,omitempty"`
 	AuthManagerName         string                  `json:"auth_manager,omitempty"`
@@ -44,12 +49,12 @@ type RouterModule struct {
 	impl services.RouterImpl
 }
 
+// ProviderDef defines a provider's configuration.
 type ProviderDef struct {
 	Name       string `json:"name,omitempty"`
 	APIBaseURL string `json:"api_base_url,omitempty"`
 	Style      string `json:"style,omitempty"`
-
-	impl services.ProviderImpl
+	impl       services.ProviderImpl
 }
 
 func ParseRouterModule(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
@@ -84,6 +89,7 @@ func (m *RouterModule) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 
 	for d.Next() {
 		if d.Val() == "ai_router" && !d.NextArg() {
+			// No inline argument
 		}
 		for d.NextBlock(0) {
 			switch d.Val() {
@@ -139,7 +145,7 @@ func (m *RouterModule) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				}
 				m.DefaultProviderForModel[modelName] = providerNames
 			default:
-				return d.Errf("unrecognized ai_core_router option '%s'", d.Val())
+				return d.Errf("unrecognized ai_router option '%s'", d.Val())
 			}
 		}
 	}
@@ -170,30 +176,30 @@ func (m *RouterModule) Provision(ctx caddy.Context) error {
 		if err != nil {
 			return fmt.Errorf("provider %s: invalid api_base_url '%s': %v", name, p.APIBaseURL, err)
 		}
+
+		providerStyle := styles.ParseStyle(p.Style)
 		p.impl = services.ProviderImpl{
 			Name:      name,
 			ParsedURL: *parsedURL,
+			Style:     providerStyle,
 			Router:    &m.impl,
 		}
 
+		// Initialize commands based on style
 		var providerCommands map[string]any
-		switch p.Style {
-		/*case "google":
-			providerCommands = []interface{}{
-				&commands.ListModelsGoogle{},
-				&commands.CompletionsGoogle{},
-			}
-		case "anthropic":
-			providerCommands = []interface{}{
-				&commands.ListModelsAnthropic{},
-				&commands.CompletionsAnthropic{},
-			}
-		case "cloudflare":
+		switch providerStyle {
+		case styles.StyleAnthropic:
 			providerCommands = map[string]any{
-				"list_models":      &cfai.ListModels{},
-				"chat_completions": &cfai.ChatCompletions{},
-			}*/
-		default:
+				"list_models": &anthropic.ListModels{},
+				"messages":    &anthropic.Messages{},
+			}
+		case styles.StyleOpenAIResponses:
+			providerCommands = map[string]any{
+				"list_models":      &openai.ListModels{},
+				"chat_completions": &openai.ChatCompletions{},
+				"responses":        &openai.Responses{},
+			}
+		default: // OpenAI-compatible
 			providerCommands = map[string]any{
 				"list_models":      &openai.ListModels{},
 				"chat_completions": &openai.ChatCompletions{},
@@ -201,7 +207,10 @@ func (m *RouterModule) Provision(ctx caddy.Context) error {
 		}
 		p.impl.Commands = providerCommands
 
-		m.impl.Logger.Info("Provisioned provider", zap.String("name", name), zap.String("base_url", p.APIBaseURL))
+		m.impl.Logger.Info("Provisioned provider",
+			zap.String("name", name),
+			zap.String("base_url", p.APIBaseURL),
+			zap.String("style", string(providerStyle)))
 	}
 
 	RegisterRouter(m.Name, m)
@@ -213,7 +222,7 @@ func (m *RouterModule) Validate() error {
 	defer m.impl.Mu.RUnlock()
 
 	if len(m.Providers) == 0 {
-		return fmt.Errorf("at least one provider must be configured for ai_core_router")
+		return fmt.Errorf("at least one provider must be configured for ai_router")
 	}
 	return nil
 }
@@ -222,33 +231,42 @@ func (m *RouterModule) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 	return next.ServeHTTP(w, req)
 }
 
-func (m *RouterModule) ResolveProvidersOrderAndModel(model string) (providerNames []string, actualModelName string) { // Receiver changed to AICoreRouter (r)
-	m.impl.Mu.RLock() // Ensure read lock for accessing shared provider maps
+// ResolveProvidersOrderAndModel determines provider order and normalizes the model name.
+func (m *RouterModule) ResolveProvidersOrderAndModel(model string) (providerNames []string, actualModelName string) {
+	m.impl.Mu.RLock()
 	defer m.impl.Mu.RUnlock()
 
-	actualModelName = strings.SplitN(model, "+", 2)[0] // Default to requested model name without plugins
+	// Strip plugin suffixes: model="gpt-4+plugin1:arg"
+	actualModelName = strings.SplitN(model, "+", 2)[0]
 
 	// Check for explicit provider prefix: "providerName/modelName"
 	parts := strings.SplitN(actualModelName, "/", 2)
 	if len(parts) == 2 {
 		pName := strings.ToLower(parts[0])
 		actualModelName = parts[1]
-		if _, ok := m.Providers[pName]; ok { // Check if the prefixed provider is configured
-			m.impl.Logger.Debug("Found explicit provider by prefix", zap.String("prefix", pName), zap.String("model", actualModelName)) // Changed to Debug
+		if _, ok := m.Providers[pName]; ok {
+			m.impl.Logger.Debug("Found explicit provider by prefix",
+				zap.String("prefix", pName),
+				zap.String("model", actualModelName))
 			return append([]string{pName}, m.ProviderOrder...), actualModelName
 		}
-		// Log if prefix is found but provider isn't recognized, then proceed to other checks
-		m.impl.Logger.Debug("Prefix found but provider not recognized, checking defaults", zap.String("prefix", pName), zap.String("requested_model", actualModelName)) // Changed to Debug
+		m.impl.Logger.Debug("Prefix found but provider not recognized, checking defaults",
+			zap.String("prefix", pName),
+			zap.String("requested_model", actualModelName))
 	}
 
 	// Check for model-specific default provider
 	if pNames, ok := m.DefaultProviderForModel[actualModelName]; ok {
 		for _, pName := range pNames {
 			if _, providerExists := m.Providers[pName]; providerExists {
-				m.impl.Logger.Debug("Found default provider for model", zap.String("model", actualModelName), zap.String("provider", pName)) // Changed to Debug
-				return append([]string{pName}, m.ProviderOrder...), actualModelName                                                          // Model name remains as requested
+				m.impl.Logger.Debug("Found default provider for model",
+					zap.String("model", actualModelName),
+					zap.String("provider", pName))
+				return append([]string{pName}, m.ProviderOrder...), actualModelName
 			}
-			m.impl.Logger.Warn("Default provider for model configured but provider itself not found", zap.String("model", actualModelName), zap.String("configured_provider", pName))
+			m.impl.Logger.Warn("Default provider for model configured but provider itself not found",
+				zap.String("model", actualModelName),
+				zap.String("configured_provider", pName))
 		}
 	}
 
