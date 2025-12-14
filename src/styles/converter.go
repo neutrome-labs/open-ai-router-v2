@@ -185,25 +185,71 @@ func (c *DefaultConverter) ConvertResponse(resp formats.ManagedResponse, from, t
 		}
 
 		// Convert output items to choices
-		for i, item := range responsesResp.Output {
+		// First, gather all message content and tool calls
+		var content string
+		var toolCalls []formats.ToolCall
+		var role string = "assistant"
+
+		for _, item := range responsesResp.Output {
 			if item.Type == "message" {
-				var content string
+				if item.Role != "" {
+					role = item.Role
+				}
 				for _, part := range item.Content {
-					if part.Type == "text" {
+					if part.Type == "text" || part.Type == "output_text" {
 						content += part.Text
 					}
 				}
-
-				openaiResp.Choices = append(openaiResp.Choices, formats.Choice{
-					Index: i,
-					Message: &formats.Message{
-						Role:    item.Role,
-						Content: content,
-					},
-					FinishReason: "stop",
-				})
+			} else if item.Type == "function_call" {
+				tc := formats.ToolCall{
+					ID:   item.CallID,
+					Type: "function",
+				}
+				tc.Function = &struct {
+					Name      string `json:"name,omitempty"`
+					Arguments string `json:"arguments,omitempty"`
+				}{
+					Name:      item.Name,
+					Arguments: item.Arguments,
+				}
+				toolCalls = append(toolCalls, tc)
 			}
 		}
+
+		// Determine finish reason based on response status and tool calls
+		finishReason := "stop"
+		if len(toolCalls) > 0 {
+			finishReason = "tool_calls"
+		} else {
+			// Map Responses API status to Chat Completions finish_reason
+			switch responsesResp.Status {
+			case "completed":
+				finishReason = "stop"
+			case "incomplete":
+				finishReason = "length"
+			case "cancelled":
+				finishReason = "stop"
+			case "failed":
+				finishReason = "stop"
+			default:
+				finishReason = "stop"
+			}
+		}
+
+		choice := formats.Choice{
+			Index: 0,
+			Message: &formats.Message{
+				Role:    role,
+				Content: content,
+			},
+			FinishReason: finishReason,
+		}
+
+		if len(toolCalls) > 0 {
+			choice.Message.ToolCalls = toolCalls
+		}
+
+		openaiResp.Choices = append(openaiResp.Choices, choice)
 
 		if responsesResp.Usage != nil {
 			openaiResp.Usage = &formats.Usage{

@@ -283,6 +283,16 @@ func (r *OpenAIChatResponse) FromJSON(data []byte) error {
 		return err
 	}
 
+	// Fix incorrect finish_reason when tool_calls are present
+	// Some providers incorrectly return "stop" instead of "tool_calls"
+	for i := range r.Choices {
+		if r.Choices[i].Message != nil && len(r.Choices[i].Message.ToolCalls) > 0 {
+			if r.Choices[i].FinishReason == "stop" || r.Choices[i].FinishReason == "" {
+				r.Choices[i].FinishReason = "tool_calls"
+			}
+		}
+	}
+
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
