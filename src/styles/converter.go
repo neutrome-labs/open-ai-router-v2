@@ -47,6 +47,24 @@ func (c *DefaultConverter) ConvertRequest(req formats.ManagedRequest, from, to S
 		responsesReq.TopP = openaiReq.TopP
 		responsesReq.User = openaiReq.User
 
+		// Convert tools from Chat to Responses format
+		// Responses API has flat structure for function tools (name/description/parameters at top level)
+		for _, tool := range openaiReq.Tools {
+			respTool := formats.ResponsesTool{
+				Type: tool.Type,
+			}
+			if tool.Function != nil {
+				respTool.Name = tool.Function.Name
+				respTool.Description = tool.Function.Description
+				respTool.Parameters = tool.Function.Parameters
+				respTool.Strict = tool.Function.Strict
+			}
+			responsesReq.Tools = append(responsesReq.Tools, respTool)
+		}
+
+		// Pass through tool_choice
+		responsesReq.ToolChoice = openaiReq.ToolChoice
+
 		// Copy extras
 		responsesReq.SetRawExtras(openaiReq.GetRawExtras())
 
@@ -171,95 +189,20 @@ func (c *DefaultConverter) ConvertResponse(resp formats.ManagedResponse, from, t
 		return anthropicResp.ToOpenAIChat(), nil
 	}
 
-	// OpenAI Responses -> OpenAI Chat (simplified)
+	// OpenAI Responses -> OpenAI Chat
 	if from == StyleOpenAIResponses && to == StyleOpenAIChat {
+		// Handle streaming events from Responses API
+		if streamEvent, ok := resp.(*formats.OpenAIResponsesStreamEvent); ok {
+			return convertResponsesStreamEventToChat(streamEvent), nil
+		}
+
+		// Handle non-streaming response
 		responsesResp, ok := resp.(*formats.OpenAIResponsesResponse)
 		if !ok {
-			return nil, fmt.Errorf("expected OpenAIResponsesResponse, got %T", resp)
+			return nil, fmt.Errorf("expected OpenAIResponsesResponse or OpenAIResponsesStreamEvent, got %T", resp)
 		}
 
-		openaiResp := &formats.OpenAIChatResponse{
-			ID:     responsesResp.ID,
-			Object: "chat.completion",
-			Model:  responsesResp.Model,
-		}
-
-		// Convert output items to choices
-		// First, gather all message content and tool calls
-		var content string
-		var toolCalls []formats.ToolCall
-		var role string = "assistant"
-
-		for _, item := range responsesResp.Output {
-			if item.Type == "message" {
-				if item.Role != "" {
-					role = item.Role
-				}
-				for _, part := range item.Content {
-					if part.Type == "text" || part.Type == "output_text" {
-						content += part.Text
-					}
-				}
-			} else if item.Type == "function_call" {
-				tc := formats.ToolCall{
-					ID:   item.CallID,
-					Type: "function",
-				}
-				tc.Function = &struct {
-					Name      string `json:"name,omitempty"`
-					Arguments string `json:"arguments,omitempty"`
-				}{
-					Name:      item.Name,
-					Arguments: item.Arguments,
-				}
-				toolCalls = append(toolCalls, tc)
-			}
-		}
-
-		// Determine finish reason based on response status and tool calls
-		finishReason := "stop"
-		if len(toolCalls) > 0 {
-			finishReason = "tool_calls"
-		} else {
-			// Map Responses API status to Chat Completions finish_reason
-			switch responsesResp.Status {
-			case "completed":
-				finishReason = "stop"
-			case "incomplete":
-				finishReason = "length"
-			case "cancelled":
-				finishReason = "stop"
-			case "failed":
-				finishReason = "stop"
-			default:
-				finishReason = "stop"
-			}
-		}
-
-		choice := formats.Choice{
-			Index: 0,
-			Message: &formats.Message{
-				Role:    role,
-				Content: content,
-			},
-			FinishReason: finishReason,
-		}
-
-		if len(toolCalls) > 0 {
-			choice.Message.ToolCalls = toolCalls
-		}
-
-		openaiResp.Choices = append(openaiResp.Choices, choice)
-
-		if responsesResp.Usage != nil {
-			openaiResp.Usage = &formats.Usage{
-				PromptTokens:     responsesResp.Usage.InputTokens,
-				CompletionTokens: responsesResp.Usage.OutputTokens,
-				TotalTokens:      responsesResp.Usage.TotalTokens,
-			}
-		}
-
-		return openaiResp, nil
+		return convertResponsesResponseToChat(responsesResp), nil
 	}
 
 	// OpenAI Chat -> Anthropic
@@ -321,4 +264,197 @@ func (c *DefaultConverter) ConvertResponse(resp formats.ManagedResponse, from, t
 	}
 
 	return nil, fmt.Errorf("unsupported conversion from %s to %s", from, to)
+}
+
+// convertResponsesStreamEventToChat converts a Responses API streaming event to Chat Completions streaming chunk
+func convertResponsesStreamEventToChat(event *formats.OpenAIResponsesStreamEvent) *formats.OpenAIChatResponse {
+	resp := &formats.OpenAIChatResponse{
+		Object: "chat.completion.chunk",
+	}
+
+	// Map different event types to appropriate Chat Completions delta format
+	switch event.Type {
+	case "response.output_text.delta":
+		// Text delta - this is the main content streaming event
+		resp.Choices = []formats.Choice{{
+			Index: event.OutputIndex,
+			Delta: &formats.Message{
+				Role:    "assistant",
+				Content: event.Delta,
+			},
+		}}
+	case "response.output_text.done":
+		// Text done - final content, mark as finished
+		resp.Choices = []formats.Choice{{
+			Index:        event.OutputIndex,
+			Delta:        &formats.Message{},
+			FinishReason: "stop",
+		}}
+	case "response.output_item.added":
+		// Output item added - send role
+		if event.Item != nil && event.Item.Role != "" {
+			resp.Choices = []formats.Choice{{
+				Index: event.OutputIndex,
+				Delta: &formats.Message{
+					Role: event.Item.Role,
+				},
+			}}
+		}
+	case "response.content_part.added":
+		// Content part added - skip, we'll get the delta events
+		resp.Choices = []formats.Choice{{
+			Index: event.OutputIndex,
+			Delta: &formats.Message{},
+		}}
+	case "response.function_call_arguments.delta":
+		// Function call arguments delta
+		resp.Choices = []formats.Choice{{
+			Index: event.OutputIndex,
+			Delta: &formats.Message{
+				ToolCalls: []formats.ToolCall{{
+					Index: event.ContentIndex,
+					Function: &struct {
+						Name      string `json:"name,omitempty"`
+						Arguments string `json:"arguments,omitempty"`
+					}{
+						Arguments: event.Delta,
+					},
+				}},
+			},
+		}}
+	case "response.function_call_arguments.done":
+		// Function call done
+		resp.Choices = []formats.Choice{{
+			Index: event.OutputIndex,
+			Delta: &formats.Message{
+				ToolCalls: []formats.ToolCall{{
+					ID:    event.ItemID,
+					Type:  "function",
+					Index: event.ContentIndex,
+					Function: &struct {
+						Name      string `json:"name,omitempty"`
+						Arguments string `json:"arguments,omitempty"`
+					}{
+						Name:      event.Name,
+						Arguments: event.Arguments,
+					},
+				}},
+			},
+			FinishReason: "tool_calls",
+		}}
+	case "response.completed":
+		// Response completed - get final info from response object
+		if event.Response != nil {
+			resp.ID = event.Response.ID
+			resp.Model = event.Response.Model
+			if event.Response.Usage != nil {
+				resp.Usage = &formats.Usage{
+					PromptTokens:     event.Response.Usage.InputTokens,
+					CompletionTokens: event.Response.Usage.OutputTokens,
+					TotalTokens:      event.Response.Usage.TotalTokens,
+				}
+			}
+		}
+		resp.Choices = []formats.Choice{{
+			Index:        0,
+			Delta:        &formats.Message{},
+			FinishReason: "stop",
+		}}
+	case "response.created", "response.in_progress":
+		// Response metadata events - extract ID and model if available
+		if event.Response != nil {
+			resp.ID = event.Response.ID
+			resp.Model = event.Response.Model
+		}
+		resp.Choices = []formats.Choice{{
+			Index: 0,
+			Delta: &formats.Message{},
+		}}
+	default:
+		// For unhandled event types, return empty delta
+		resp.Choices = []formats.Choice{{
+			Index: 0,
+			Delta: &formats.Message{},
+		}}
+	}
+
+	return resp
+}
+
+// convertResponsesResponseToChat converts a non-streaming Responses API response to Chat Completions format
+func convertResponsesResponseToChat(responsesResp *formats.OpenAIResponsesResponse) *formats.OpenAIChatResponse {
+	openaiResp := &formats.OpenAIChatResponse{
+		ID:     responsesResp.ID,
+		Object: "chat.completion",
+		Model:  responsesResp.Model,
+	}
+
+	// Convert output items to choices
+	var content string
+	var toolCalls []formats.ToolCall
+	var role string = "assistant"
+
+	for _, item := range responsesResp.Output {
+		if item.Type == "message" {
+			if item.Role != "" {
+				role = item.Role
+			}
+			for _, part := range item.Content {
+				if part.Type == "text" || part.Type == "output_text" {
+					content += part.Text
+				}
+			}
+		} else if item.Type == "function_call" {
+			tc := formats.ToolCall{
+				ID:   item.CallID,
+				Type: "function",
+			}
+			tc.Function = &struct {
+				Name      string `json:"name,omitempty"`
+				Arguments string `json:"arguments,omitempty"`
+			}{
+				Name:      item.Name,
+				Arguments: item.Arguments,
+			}
+			toolCalls = append(toolCalls, tc)
+		}
+	}
+
+	// Determine finish reason
+	finishReason := "stop"
+	if len(toolCalls) > 0 {
+		finishReason = "tool_calls"
+	} else {
+		switch responsesResp.Status {
+		case "completed":
+			finishReason = "stop"
+		case "incomplete":
+			finishReason = "length"
+		}
+	}
+
+	choice := formats.Choice{
+		Index: 0,
+		Message: &formats.Message{
+			Role:    role,
+			Content: content,
+		},
+		FinishReason: finishReason,
+	}
+
+	if len(toolCalls) > 0 {
+		choice.Message.ToolCalls = toolCalls
+	}
+
+	openaiResp.Choices = append(openaiResp.Choices, choice)
+
+	if responsesResp.Usage != nil {
+		openaiResp.Usage = &formats.Usage{
+			PromptTokens:     responsesResp.Usage.InputTokens,
+			CompletionTokens: responsesResp.Usage.OutputTokens,
+			TotalTokens:      responsesResp.Usage.TotalTokens,
+		}
+	}
+
+	return openaiResp
 }

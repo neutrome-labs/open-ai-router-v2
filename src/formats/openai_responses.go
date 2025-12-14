@@ -41,11 +41,20 @@ type OpenAIResponsesRequest struct {
 }
 
 // ResponsesTool represents a tool in the Responses API
+// Note: Responses API has a different format than Chat Completions - function tools have
+// name/description/parameters at top level, not nested in a "function" object
 type ResponsesTool struct {
-	Type        string        `json:"type"` // function, file_search, code_interpreter, computer_use, etc.
-	Function    *ToolFunction `json:"function,omitempty"`
-	FileSearch  any           `json:"file_search,omitempty"`
-	ComputerUse any           `json:"computer_use,omitempty"`
+	Type string `json:"type"` // function, file_search, code_interpreter, computer_use, etc.
+
+	// For function tools (Responses API format - flat structure)
+	Name        string `json:"name,omitempty"`
+	Description string `json:"description,omitempty"`
+	Parameters  any    `json:"parameters,omitempty"`
+	Strict      *bool  `json:"strict,omitempty"`
+
+	// For other tool types
+	FileSearch  any `json:"file_search,omitempty"`
+	ComputerUse any `json:"computer_use,omitempty"`
 }
 
 // ResponsesTextConfig configures text output
@@ -271,7 +280,8 @@ type OpenAIResponsesResponse struct {
 	Reasoning          *ResponsesReasoningContent `json:"reasoning,omitempty"`
 	Error              any                        `json:"error,omitempty"`
 
-	extras map[string]json.RawMessage
+	isChunk bool
+	extras  map[string]json.RawMessage
 }
 
 // ResponsesOutputItem represents an output item in the response
@@ -374,8 +384,81 @@ func (r *OpenAIResponsesResponse) GetChoices() []Choice {
 	return choices
 }
 
-func (r *OpenAIResponsesResponse) IsChunk() bool                            { return false } // Streaming uses different event types
+func (r *OpenAIResponsesResponse) IsChunk() bool                            { return r.isChunk }
 func (r *OpenAIResponsesResponse) GetRawExtras() map[string]json.RawMessage { return r.extras }
+
+// OpenAIResponsesStreamEvent represents a streaming event from the Responses API
+// The Responses API has a completely different streaming format than Chat Completions
+type OpenAIResponsesStreamEvent struct {
+	Type string `json:"type"`
+
+	// For response.output_text.delta
+	Delta        string `json:"delta,omitempty"`
+	ItemID       string `json:"item_id,omitempty"`
+	OutputIndex  int    `json:"output_index,omitempty"`
+	ContentIndex int    `json:"content_index,omitempty"`
+
+	// For response.output_text.done
+	Text string `json:"text,omitempty"`
+
+	// For response.completed, response.created, etc.
+	Response *OpenAIResponsesResponse `json:"response,omitempty"`
+
+	// For response.output_item.added/done
+	Item *ResponsesOutputItem `json:"item,omitempty"`
+
+	// For response.content_part.added/done
+	Part *ResponsesContentPart `json:"part,omitempty"`
+
+	// For function call arguments
+	Arguments string `json:"arguments,omitempty"`
+	Name      string `json:"name,omitempty"`
+
+	// Sequence number
+	SequenceNumber int `json:"sequence_number,omitempty"`
+
+	// Mark as chunk for converter
+	isChunk bool
+	extras  map[string]json.RawMessage
+}
+
+func (e *OpenAIResponsesStreamEvent) GetModel() string {
+	if e.Response != nil {
+		return e.Response.Model
+	}
+	return ""
+}
+
+func (e *OpenAIResponsesStreamEvent) GetUsage() *Usage {
+	if e.Response != nil {
+		return e.Response.GetUsage()
+	}
+	return nil
+}
+
+func (e *OpenAIResponsesStreamEvent) SetUsage(usage *Usage) {
+	if e.Response != nil {
+		e.Response.SetUsage(usage)
+	}
+}
+
+func (e *OpenAIResponsesStreamEvent) GetChoices() []Choice { return nil }
+func (e *OpenAIResponsesStreamEvent) IsChunk() bool        { return true }
+func (e *OpenAIResponsesStreamEvent) GetRawExtras() map[string]json.RawMessage {
+	return e.extras
+}
+
+func (e *OpenAIResponsesStreamEvent) ToJSON() ([]byte, error) {
+	return json.Marshal(e)
+}
+
+func (e *OpenAIResponsesStreamEvent) FromJSON(data []byte) error {
+	if err := json.Unmarshal(data, e); err != nil {
+		return err
+	}
+	e.isChunk = true
+	return nil
+}
 
 func (r *OpenAIResponsesResponse) FromJSON(data []byte) error {
 	if err := json.Unmarshal(data, r); err != nil {

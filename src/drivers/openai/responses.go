@@ -127,10 +127,11 @@ func (c *Responses) DoInferenceStream(p *services.ProviderImpl, req formats.Mana
 			if event.Done {
 				return
 			}
-			if event.Data != nil {
-				result := &formats.OpenAIResponsesResponse{}
-				if err := result.FromJSON(mustMarshal(event.Data)); err == nil {
-					chunks <- drivers.InferenceStreamChunk{Data: result}
+			if event.RawData != nil {
+				// Parse as streaming event first
+				streamEvent := &formats.OpenAIResponsesStreamEvent{}
+				if err := streamEvent.FromJSON(event.RawData); err == nil {
+					chunks <- drivers.InferenceStreamChunk{Data: streamEvent}
 				}
 			}
 		}
