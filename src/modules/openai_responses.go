@@ -88,7 +88,7 @@ func (m *OpenAIResponsesModule) resolvePlugins(r *http.Request, req formats.Mana
 
 func (m *OpenAIResponsesModule) serveResponses(
 	p *ProviderDef,
-	cmd drivers.ResponsesCommand,
+	cmd drivers.InferenceCommand,
 	req formats.ManagedRequest,
 	originalBody []byte,
 	chain *plugins.PluginChain,
@@ -112,9 +112,9 @@ func (m *OpenAIResponsesModule) serveResponses(
 		return nil
 	}
 
-	hres, res, err := cmd.DoResponses(&p.impl, providerReq, r)
+	hres, res, err := cmd.DoInference(&p.impl, providerReq, r)
 	if err != nil {
-		m.logger.Error("responses error", zap.String("provider", p.Name), zap.Error(err))
+		m.logger.Error("inference error", zap.String("provider", p.Name), zap.Error(err))
 		// Run error plugins to notify about the failure
 		_ = chain.RunError(&p.impl, r, req, hres, err)
 		return err
@@ -148,7 +148,7 @@ func (m *OpenAIResponsesModule) serveResponses(
 
 func (m *OpenAIResponsesModule) serveResponsesStream(
 	p *ProviderDef,
-	cmd drivers.ResponsesCommand,
+	cmd drivers.InferenceCommand,
 	req formats.ManagedRequest,
 	originalBody []byte,
 	chain *plugins.PluginChain,
@@ -179,9 +179,9 @@ func (m *OpenAIResponsesModule) serveResponsesStream(
 		return nil
 	}
 
-	hres, stream, err := cmd.DoResponsesStream(&p.impl, providerReq, r)
+	hres, stream, err := cmd.DoInferenceStream(&p.impl, providerReq, r)
 	if err != nil {
-		m.logger.Error("responses stream error", zap.String("provider", p.Name), zap.Error(err))
+		m.logger.Error("inference stream error", zap.String("provider", p.Name), zap.Error(err))
 		// Run error plugins to notify about the failure
 		_ = chain.RunError(&p.impl, r, req, hres, err)
 		_ = sseWriter.WriteError("start failed")
@@ -282,77 +282,9 @@ func (m *OpenAIResponsesModule) ServeHTTP(w http.ResponseWriter, r *http.Request
 		}
 		providerReq = processedReq.(*formats.OpenAIResponsesRequest)
 
-		cmd, ok := p.impl.Commands["responses"].(drivers.ResponsesCommand)
+		cmd, ok := p.impl.Commands["inference"].(drivers.InferenceCommand)
 		if !ok {
-			// Fall back to chat completions with conversion
-			chatCmd, ok := p.impl.Commands["chat_completions"].(drivers.ChatCompletionsCommand)
-			if !ok {
-				continue
-			}
-
-			// Convert responses request to chat completions
-			converter := &styles.DefaultConverter{}
-			chatReq, err := converter.ConvertRequest(providerReq, styles.StyleOpenAIResponses, styles.StyleOpenAIChat)
-			if err != nil {
-				continue
-			}
-
-			if providerReq.IsStreaming() {
-				// Handle streaming with conversion
-				hres, stream, err := chatCmd.DoChatCompletionsStream(&p.impl, chatReq, r)
-				if err != nil {
-					if displayErr == nil {
-						displayErr = err
-					}
-					continue
-				}
-
-				sseWriter := sse.NewWriter(w)
-				_ = sseWriter.WriteHeartbeat("ok")
-
-				var lastChunk formats.ManagedResponse
-				for chunk := range stream {
-					if chunk.RuntimeError != nil {
-						_ = sseWriter.WriteError(chunk.RuntimeError.Error())
-						break
-					}
-					// Convert response back
-					converted, err := converter.ConvertResponse(chunk.Data, styles.StyleOpenAIChat, styles.StyleOpenAIResponses)
-					if err == nil && converted != nil {
-						lastChunk = converted
-						data, _ := converted.ToJSON()
-						_ = sseWriter.WriteRaw(data)
-					}
-				}
-				_ = chain.RunStreamEnd(&p.impl, r, providerReq, hres, lastChunk)
-				_ = sseWriter.WriteDone()
-			} else {
-				hres, res, err := chatCmd.DoChatCompletions(&p.impl, chatReq, r)
-				if err != nil {
-					if displayErr == nil {
-						displayErr = err
-					}
-					continue
-				}
-
-				// Convert response back
-				converted, err := converter.ConvertResponse(res, styles.StyleOpenAIChat, styles.StyleOpenAIResponses)
-				if err != nil {
-					if displayErr == nil {
-						displayErr = err
-					}
-					continue
-				}
-
-				converted, _ = chain.RunAfter(&p.impl, r, providerReq, hres, converted)
-				data, _ := converted.ToJSON()
-				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write(data)
-			}
-
-			w.Header().Set("X-Real-Provider-Id", name)
-			w.Header().Set("X-Real-Model-Id", model)
-			return nil
+			continue
 		}
 
 		if providerReq.IsStreaming() {

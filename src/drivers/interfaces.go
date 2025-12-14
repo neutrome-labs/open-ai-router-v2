@@ -22,32 +22,19 @@ type ListModelsCommand interface {
 	DoListModels(p *services.ProviderImpl, r *http.Request) ([]ListModelsModel, error)
 }
 
-// ChatCompletionsStreamChunk represents a streaming response chunk
-type ChatCompletionsStreamChunk struct {
+// InferenceStreamChunk represents a streaming response chunk
+type InferenceStreamChunk struct {
 	RuntimeError error
 	Data         formats.ManagedResponse
 }
 
-// ChatCompletionsCommand handles chat completions requests
-type ChatCompletionsCommand interface {
-	// DoChatCompletions sends a non-streaming request
-	DoChatCompletions(p *services.ProviderImpl, req formats.ManagedRequest, r *http.Request) (*http.Response, formats.ManagedResponse, error)
-	// DoChatCompletionsStream sends a streaming request
-	DoChatCompletionsStream(p *services.ProviderImpl, req formats.ManagedRequest, r *http.Request) (*http.Response, chan ChatCompletionsStreamChunk, error)
-}
-
-// ResponsesCommand handles OpenAI Responses API requests
-type ResponsesCommand interface {
-	// DoResponses sends a non-streaming request
-	DoResponses(p *services.ProviderImpl, req formats.ManagedRequest, r *http.Request) (*http.Response, formats.ManagedResponse, error)
-	// DoResponsesStream sends a streaming request
-	DoResponsesStream(p *services.ProviderImpl, req formats.ManagedRequest, r *http.Request) (*http.Response, chan ChatCompletionsStreamChunk, error)
-}
-
-// MessagesCommand handles Anthropic Messages API requests
-type MessagesCommand interface {
-	// DoMessages sends a non-streaming request
-	DoMessages(p *services.ProviderImpl, req formats.ManagedRequest, r *http.Request) (*http.Response, formats.ManagedResponse, error)
-	// DoMessagesStream sends a streaming request
-	DoMessagesStream(p *services.ProviderImpl, req formats.ManagedRequest, r *http.Request) (*http.Response, chan ChatCompletionsStreamChunk, error)
+// InferenceCommand is the unified interface for all inference APIs.
+// Each driver (OpenAI Chat, OpenAI Responses, Anthropic Messages, etc.)
+// implements this interface to handle requests in their native format.
+// The module handles format conversion at the boundary.
+type InferenceCommand interface {
+	// DoInference sends a non-streaming inference request
+	DoInference(p *services.ProviderImpl, req formats.ManagedRequest, r *http.Request) (*http.Response, formats.ManagedResponse, error)
+	// DoInferenceStream sends a streaming inference request
+	DoInferenceStream(p *services.ProviderImpl, req formats.ManagedRequest, r *http.Request) (*http.Response, chan InferenceStreamChunk, error)
 }

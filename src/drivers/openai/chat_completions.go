@@ -52,9 +52,10 @@ func (c *ChatCompletions) createRequest(p *services.ProviderImpl, req formats.Ma
 	return httpReq, nil
 }
 
-func (c *ChatCompletions) DoChatCompletions(p *services.ProviderImpl, req formats.ManagedRequest, r *http.Request) (*http.Response, formats.ManagedResponse, error) {
+// DoInference implements InferenceCommand for OpenAI Chat Completions API
+func (c *ChatCompletions) DoInference(p *services.ProviderImpl, req formats.ManagedRequest, r *http.Request) (*http.Response, formats.ManagedResponse, error) {
 	if Logger != nil {
-		Logger.Debug("DoChatCompletions starting",
+		Logger.Debug("DoInference (chat_completions) starting",
 			zap.String("provider", p.Name),
 			zap.String("model", req.GetModel()),
 			zap.String("base_url", p.ParsedURL.String()))
@@ -63,33 +64,33 @@ func (c *ChatCompletions) DoChatCompletions(p *services.ProviderImpl, req format
 	httpReq, err := c.createRequest(p, req, r, "/chat/completions")
 	if err != nil {
 		if Logger != nil {
-			Logger.Error("DoChatCompletions createRequest failed", zap.Error(err))
+			Logger.Error("DoInference (chat_completions) createRequest failed", zap.Error(err))
 		}
 		return nil, nil, err
 	}
 
 	if Logger != nil {
-		Logger.Debug("DoChatCompletions sending request", zap.String("url", httpReq.URL.String()))
+		Logger.Debug("DoInference (chat_completions) sending request", zap.String("url", httpReq.URL.String()))
 	}
 
 	res, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
 		if Logger != nil {
-			Logger.Error("DoChatCompletions HTTP request failed", zap.Error(err))
+			Logger.Error("DoInference (chat_completions) HTTP request failed", zap.Error(err))
 		}
 		return nil, nil, err
 	}
 	defer res.Body.Close()
 
 	if Logger != nil {
-		Logger.Debug("DoChatCompletions response received", zap.Int("status", res.StatusCode))
+		Logger.Debug("DoInference (chat_completions) response received", zap.Int("status", res.StatusCode))
 	}
 
 	respData, _ := io.ReadAll(res.Body)
 
 	if res.StatusCode != 200 {
 		if Logger != nil {
-			Logger.Error("DoChatCompletions non-200 response",
+			Logger.Error("DoInference (chat_completions) non-200 response",
 				zap.Int("status", res.StatusCode),
 				zap.String("body", string(respData)))
 		}
@@ -99,7 +100,7 @@ func (c *ChatCompletions) DoChatCompletions(p *services.ProviderImpl, req format
 	result := &formats.OpenAIChatResponse{}
 	if err := result.FromJSON(respData); err != nil {
 		if Logger != nil {
-			Logger.Error("DoChatCompletions failed to parse response", zap.Error(err))
+			Logger.Error("DoInference (chat_completions) failed to parse response", zap.Error(err))
 		}
 		return res, nil, err
 	}
@@ -107,9 +108,10 @@ func (c *ChatCompletions) DoChatCompletions(p *services.ProviderImpl, req format
 	return res, result, nil
 }
 
-func (c *ChatCompletions) DoChatCompletionsStream(p *services.ProviderImpl, req formats.ManagedRequest, r *http.Request) (*http.Response, chan drivers.ChatCompletionsStreamChunk, error) {
+// DoInferenceStream implements InferenceCommand for streaming OpenAI Chat Completions
+func (c *ChatCompletions) DoInferenceStream(p *services.ProviderImpl, req formats.ManagedRequest, r *http.Request) (*http.Response, chan drivers.InferenceStreamChunk, error) {
 	if Logger != nil {
-		Logger.Debug("DoChatCompletionsStream starting",
+		Logger.Debug("DoInferenceStream (chat_completions) starting",
 			zap.String("provider", p.Name),
 			zap.String("model", req.GetModel()))
 	}
@@ -117,30 +119,30 @@ func (c *ChatCompletions) DoChatCompletionsStream(p *services.ProviderImpl, req 
 	httpReq, err := c.createRequest(p, req, r, "/chat/completions")
 	if err != nil {
 		if Logger != nil {
-			Logger.Error("DoChatCompletionsStream createRequest failed", zap.Error(err))
+			Logger.Error("DoInferenceStream (chat_completions) createRequest failed", zap.Error(err))
 		}
 		return nil, nil, err
 	}
 
 	if Logger != nil {
-		Logger.Debug("DoChatCompletionsStream sending request", zap.String("url", httpReq.URL.String()))
+		Logger.Debug("DoInferenceStream (chat_completions) sending request", zap.String("url", httpReq.URL.String()))
 	}
 
 	res, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
 		if Logger != nil {
-			Logger.Error("DoChatCompletionsStream HTTP request failed", zap.Error(err))
+			Logger.Error("DoInferenceStream (chat_completions) HTTP request failed", zap.Error(err))
 		}
 		return nil, nil, err
 	}
 
 	if Logger != nil {
-		Logger.Debug("DoChatCompletionsStream response received",
+		Logger.Debug("DoInferenceStream (chat_completions) response received",
 			zap.Int("status", res.StatusCode),
 			zap.String("content_type", res.Header.Get("Content-Type")))
 	}
 
-	chunks := make(chan drivers.ChatCompletionsStreamChunk)
+	chunks := make(chan drivers.InferenceStreamChunk)
 
 	go func() {
 		defer close(chunks)
@@ -149,11 +151,11 @@ func (c *ChatCompletions) DoChatCompletionsStream(p *services.ProviderImpl, req 
 		if res.StatusCode != http.StatusOK {
 			respData, _ := io.ReadAll(res.Body)
 			if Logger != nil {
-				Logger.Error("DoChatCompletionsStream non-200 response",
+				Logger.Error("DoInferenceStream (chat_completions) non-200 response",
 					zap.Int("status", res.StatusCode),
 					zap.String("body", string(respData)))
 			}
-			chunks <- drivers.ChatCompletionsStreamChunk{
+			chunks <- drivers.InferenceStreamChunk{
 				RuntimeError: fmt.Errorf("%s - %s", res.Status, string(respData)),
 			}
 			return
@@ -165,22 +167,22 @@ func (c *ChatCompletions) DoChatCompletionsStream(p *services.ProviderImpl, req 
 		if !isSSE {
 			respData, err := io.ReadAll(res.Body)
 			if err != nil {
-				chunks <- drivers.ChatCompletionsStreamChunk{RuntimeError: err}
+				chunks <- drivers.InferenceStreamChunk{RuntimeError: err}
 				return
 			}
 			result := &formats.OpenAIChatResponse{}
 			if err := result.FromJSON(respData); err != nil {
-				chunks <- drivers.ChatCompletionsStreamChunk{RuntimeError: err}
+				chunks <- drivers.InferenceStreamChunk{RuntimeError: err}
 				return
 			}
-			chunks <- drivers.ChatCompletionsStreamChunk{Data: result}
+			chunks <- drivers.InferenceStreamChunk{Data: result}
 			return
 		}
 
 		reader := sse.NewDefaultReader(res.Body)
 		for event := range reader.ReadEvents() {
 			if event.Error != nil {
-				chunks <- drivers.ChatCompletionsStreamChunk{RuntimeError: event.Error}
+				chunks <- drivers.InferenceStreamChunk{RuntimeError: event.Error}
 				return
 			}
 			if event.Done {
@@ -190,12 +192,12 @@ func (c *ChatCompletions) DoChatCompletionsStream(p *services.ProviderImpl, req 
 				result := &formats.OpenAIChatResponse{}
 				if err := result.FromJSON(event.RawData); err != nil {
 					if Logger != nil {
-						Logger.Error("DoChatCompletionsStream failed to parse chunk", zap.Error(err))
+						Logger.Error("DoInferenceStream (chat_completions) failed to parse chunk", zap.Error(err))
 					}
-					chunks <- drivers.ChatCompletionsStreamChunk{RuntimeError: err}
+					chunks <- drivers.InferenceStreamChunk{RuntimeError: err}
 					return
 				}
-				chunks <- drivers.ChatCompletionsStreamChunk{Data: result}
+				chunks <- drivers.InferenceStreamChunk{Data: result}
 			}
 		}
 	}()

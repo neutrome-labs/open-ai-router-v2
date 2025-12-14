@@ -55,7 +55,8 @@ func (c *Messages) createRequest(p *services.ProviderImpl, req formats.ManagedRe
 	return httpReq, nil
 }
 
-func (c *Messages) DoMessages(p *services.ProviderImpl, req formats.ManagedRequest, r *http.Request) (*http.Response, formats.ManagedResponse, error) {
+// DoInference implements InferenceCommand for Anthropic Messages API
+func (c *Messages) DoInference(p *services.ProviderImpl, req formats.ManagedRequest, r *http.Request) (*http.Response, formats.ManagedResponse, error) {
 	httpReq, err := c.createRequest(p, req, r)
 	if err != nil {
 		return nil, nil, err
@@ -81,7 +82,8 @@ func (c *Messages) DoMessages(p *services.ProviderImpl, req formats.ManagedReque
 	return res, result, nil
 }
 
-func (c *Messages) DoMessagesStream(p *services.ProviderImpl, req formats.ManagedRequest, r *http.Request) (*http.Response, chan drivers.ChatCompletionsStreamChunk, error) {
+// DoInferenceStream implements InferenceCommand for streaming Anthropic Messages API
+func (c *Messages) DoInferenceStream(p *services.ProviderImpl, req formats.ManagedRequest, r *http.Request) (*http.Response, chan drivers.InferenceStreamChunk, error) {
 	httpReq, err := c.createRequest(p, req, r)
 	if err != nil {
 		return nil, nil, err
@@ -92,7 +94,7 @@ func (c *Messages) DoMessagesStream(p *services.ProviderImpl, req formats.Manage
 		return nil, nil, err
 	}
 
-	chunks := make(chan drivers.ChatCompletionsStreamChunk)
+	chunks := make(chan drivers.InferenceStreamChunk)
 
 	go func() {
 		defer close(chunks)
@@ -100,7 +102,7 @@ func (c *Messages) DoMessagesStream(p *services.ProviderImpl, req formats.Manage
 
 		if res.StatusCode != http.StatusOK {
 			respData, _ := io.ReadAll(res.Body)
-			chunks <- drivers.ChatCompletionsStreamChunk{
+			chunks <- drivers.InferenceStreamChunk{
 				RuntimeError: fmt.Errorf("%s - %s", res.Status, string(respData)),
 			}
 			return
@@ -112,15 +114,15 @@ func (c *Messages) DoMessagesStream(p *services.ProviderImpl, req formats.Manage
 		if !isSSE {
 			respData, err := io.ReadAll(res.Body)
 			if err != nil {
-				chunks <- drivers.ChatCompletionsStreamChunk{RuntimeError: err}
+				chunks <- drivers.InferenceStreamChunk{RuntimeError: err}
 				return
 			}
 			result := &formats.AnthropicResponse{}
 			if err := result.FromJSON(respData); err != nil {
-				chunks <- drivers.ChatCompletionsStreamChunk{RuntimeError: err}
+				chunks <- drivers.InferenceStreamChunk{RuntimeError: err}
 				return
 			}
-			chunks <- drivers.ChatCompletionsStreamChunk{Data: result}
+			chunks <- drivers.InferenceStreamChunk{Data: result}
 			return
 		}
 
@@ -128,7 +130,7 @@ func (c *Messages) DoMessagesStream(p *services.ProviderImpl, req formats.Manage
 		reader := sse.NewDefaultReader(res.Body)
 		for event := range reader.ReadEvents() {
 			if event.Error != nil {
-				chunks <- drivers.ChatCompletionsStreamChunk{RuntimeError: event.Error}
+				chunks <- drivers.InferenceStreamChunk{RuntimeError: event.Error}
 				return
 			}
 			if event.Done {
@@ -137,7 +139,7 @@ func (c *Messages) DoMessagesStream(p *services.ProviderImpl, req formats.Manage
 			if event.Data != nil {
 				result := &formats.AnthropicResponse{}
 				if err := result.FromJSON(mustMarshal(event.Data)); err == nil {
-					chunks <- drivers.ChatCompletionsStreamChunk{Data: result}
+					chunks <- drivers.InferenceStreamChunk{Data: result}
 				}
 			}
 		}

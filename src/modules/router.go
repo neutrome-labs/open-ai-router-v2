@@ -191,18 +191,17 @@ func (m *RouterModule) Provision(ctx caddy.Context) error {
 		case styles.StyleAnthropic:
 			providerCommands = map[string]any{
 				"list_models": &anthropic.ListModels{},
-				"messages":    &anthropic.Messages{},
+				"inference":   &anthropic.Messages{},
 			}
 		case styles.StyleOpenAIResponses:
 			providerCommands = map[string]any{
-				"list_models":      &openai.ListModels{},
-				"chat_completions": &openai.ChatCompletions{},
-				"responses":        &openai.Responses{},
+				"list_models": &openai.ListModels{},
+				"inference":   &openai.Responses{},
 			}
-		default: // OpenAI-compatible
+		default: // OpenAI-compatible (chat completions)
 			providerCommands = map[string]any{
-				"list_models":      &openai.ListModels{},
-				"chat_completions": &openai.ChatCompletions{},
+				"list_models": &openai.ListModels{},
+				"inference":   &openai.ChatCompletions{},
 			}
 		}
 		p.impl.Commands = providerCommands

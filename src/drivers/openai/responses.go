@@ -49,7 +49,7 @@ func (c *Responses) createRequest(p *services.ProviderImpl, req formats.ManagedR
 	return httpReq, nil
 }
 
-func (c *Responses) DoResponses(p *services.ProviderImpl, req formats.ManagedRequest, r *http.Request) (*http.Response, formats.ManagedResponse, error) {
+func (c *Responses) DoInference(p *services.ProviderImpl, req formats.ManagedRequest, r *http.Request) (*http.Response, formats.ManagedResponse, error) {
 	httpReq, err := c.createRequest(p, req, r)
 	if err != nil {
 		return nil, nil, err
@@ -75,7 +75,7 @@ func (c *Responses) DoResponses(p *services.ProviderImpl, req formats.ManagedReq
 	return res, result, nil
 }
 
-func (c *Responses) DoResponsesStream(p *services.ProviderImpl, req formats.ManagedRequest, r *http.Request) (*http.Response, chan drivers.ChatCompletionsStreamChunk, error) {
+func (c *Responses) DoInferenceStream(p *services.ProviderImpl, req formats.ManagedRequest, r *http.Request) (*http.Response, chan drivers.InferenceStreamChunk, error) {
 	httpReq, err := c.createRequest(p, req, r)
 	if err != nil {
 		return nil, nil, err
@@ -86,7 +86,7 @@ func (c *Responses) DoResponsesStream(p *services.ProviderImpl, req formats.Mana
 		return nil, nil, err
 	}
 
-	chunks := make(chan drivers.ChatCompletionsStreamChunk)
+	chunks := make(chan drivers.InferenceStreamChunk)
 
 	go func() {
 		defer close(chunks)
@@ -94,7 +94,7 @@ func (c *Responses) DoResponsesStream(p *services.ProviderImpl, req formats.Mana
 
 		if res.StatusCode != http.StatusOK {
 			respData, _ := io.ReadAll(res.Body)
-			chunks <- drivers.ChatCompletionsStreamChunk{
+			chunks <- drivers.InferenceStreamChunk{
 				RuntimeError: fmt.Errorf("%s - %s", res.Status, string(respData)),
 			}
 			return
@@ -106,22 +106,22 @@ func (c *Responses) DoResponsesStream(p *services.ProviderImpl, req formats.Mana
 		if !isSSE {
 			respData, err := io.ReadAll(res.Body)
 			if err != nil {
-				chunks <- drivers.ChatCompletionsStreamChunk{RuntimeError: err}
+				chunks <- drivers.InferenceStreamChunk{RuntimeError: err}
 				return
 			}
 			result := &formats.OpenAIResponsesResponse{}
 			if err := result.FromJSON(respData); err != nil {
-				chunks <- drivers.ChatCompletionsStreamChunk{RuntimeError: err}
+				chunks <- drivers.InferenceStreamChunk{RuntimeError: err}
 				return
 			}
-			chunks <- drivers.ChatCompletionsStreamChunk{Data: result}
+			chunks <- drivers.InferenceStreamChunk{Data: result}
 			return
 		}
 
 		reader := sse.NewDefaultReader(res.Body)
 		for event := range reader.ReadEvents() {
 			if event.Error != nil {
-				chunks <- drivers.ChatCompletionsStreamChunk{RuntimeError: event.Error}
+				chunks <- drivers.InferenceStreamChunk{RuntimeError: event.Error}
 				return
 			}
 			if event.Done {
@@ -130,7 +130,7 @@ func (c *Responses) DoResponsesStream(p *services.ProviderImpl, req formats.Mana
 			if event.Data != nil {
 				result := &formats.OpenAIResponsesResponse{}
 				if err := result.FromJSON(mustMarshal(event.Data)); err == nil {
-					chunks <- drivers.ChatCompletionsStreamChunk{Data: result}
+					chunks <- drivers.InferenceStreamChunk{Data: result}
 				}
 			}
 		}

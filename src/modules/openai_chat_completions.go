@@ -11,7 +11,6 @@ import (
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/google/uuid"
 	"github.com/neutrome-labs/open-ai-router/src/drivers"
-	"github.com/neutrome-labs/open-ai-router/src/drivers/openai"
 	"github.com/neutrome-labs/open-ai-router/src/formats"
 	"github.com/neutrome-labs/open-ai-router/src/plugins"
 	"github.com/neutrome-labs/open-ai-router/src/sse"
@@ -53,10 +52,6 @@ func (*OpenAIChatCompletionsModule) CaddyModule() caddy.ModuleInfo {
 
 func (m *OpenAIChatCompletionsModule) Provision(ctx caddy.Context) error {
 	m.logger = ctx.Logger(m)
-	// Share logger with other components for consistent debug output
-	plugins.Logger = m.logger
-	styles.Logger = m.logger
-	openai.Logger = m.logger
 	return nil
 }
 
@@ -126,7 +121,7 @@ func (m *OpenAIChatCompletionsModule) resolvePlugins(r *http.Request, req format
 
 func (m *OpenAIChatCompletionsModule) serveChatCompletions(
 	p *ProviderDef,
-	cmd drivers.ChatCompletionsCommand,
+	cmd drivers.InferenceCommand,
 	req formats.ManagedRequest,
 	originalBody []byte,
 	chain *plugins.PluginChain,
@@ -150,9 +145,9 @@ func (m *OpenAIChatCompletionsModule) serveChatCompletions(
 		return nil
 	}
 
-	hres, res, err := cmd.DoChatCompletions(&p.impl, providerReq, r)
+	hres, res, err := cmd.DoInference(&p.impl, providerReq, r)
 	if err != nil {
-		m.logger.Error("chat completions error", zap.String("provider", p.Name), zap.Error(err))
+		m.logger.Error("inference error", zap.String("provider", p.Name), zap.Error(err))
 		// Run error plugins to notify about the failure
 		_ = chain.RunError(&p.impl, r, req, hres, err)
 		return err
@@ -187,7 +182,7 @@ func (m *OpenAIChatCompletionsModule) serveChatCompletions(
 
 func (m *OpenAIChatCompletionsModule) serveChatCompletionsStream(
 	p *ProviderDef,
-	cmd drivers.ChatCompletionsCommand,
+	cmd drivers.InferenceCommand,
 	req formats.ManagedRequest,
 	originalBody []byte,
 	chain *plugins.PluginChain,
@@ -218,9 +213,9 @@ func (m *OpenAIChatCompletionsModule) serveChatCompletionsStream(
 		return nil
 	}
 
-	hres, stream, err := cmd.DoChatCompletionsStream(&p.impl, providerReq, r)
+	hres, stream, err := cmd.DoInferenceStream(&p.impl, providerReq, r)
 	if err != nil {
-		m.logger.Error("chat completions stream error (start)", zap.String("provider", p.Name), zap.Error(err))
+		m.logger.Error("inference stream error (start)", zap.String("provider", p.Name), zap.Error(err))
 		// Run error plugins to notify about the failure
 		_ = chain.RunError(&p.impl, r, req, hres, err)
 		_ = sseWriter.WriteError("start failed")
@@ -329,9 +324,9 @@ func (m *OpenAIChatCompletionsModule) ServeHTTP(w http.ResponseWriter, r *http.R
 			continue
 		}
 
-		cmd, ok := p.impl.Commands["chat_completions"].(drivers.ChatCompletionsCommand)
+		cmd, ok := p.impl.Commands["inference"].(drivers.InferenceCommand)
 		if !ok {
-			m.logger.Debug("Provider does not support chat_completions", zap.String("provider", name))
+			m.logger.Debug("Provider does not support inference", zap.String("provider", name))
 			continue
 		}
 
@@ -349,7 +344,7 @@ func (m *OpenAIChatCompletionsModule) ServeHTTP(w http.ResponseWriter, r *http.R
 		}
 		providerReq = processedReq.(*formats.OpenAIChatRequest)
 
-		m.logger.Debug("Executing chat completions",
+		m.logger.Debug("Executing inference",
 			zap.String("provider", name),
 			zap.String("style", string(p.impl.Style)),
 			zap.Bool("streaming", providerReq.IsStreaming()))

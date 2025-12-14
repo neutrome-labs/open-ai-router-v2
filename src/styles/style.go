@@ -55,35 +55,6 @@ type ResponseConverter interface {
 	Convert(resp formats.ManagedResponse, from, to Style) (formats.ManagedResponse, error)
 }
 
-// StyleEndpoint returns the API endpoint path for a given style and action
-func StyleEndpoint(style Style, action string) string {
-	switch style {
-	case StyleOpenAIChat:
-		if action == "chat" {
-			return "/chat/completions"
-		}
-		return "/models"
-	case StyleOpenAIResponses:
-		if action == "responses" {
-			return "/responses"
-		}
-		return "/models"
-	case StyleAnthropic:
-		if action == "messages" {
-			return "/messages"
-		}
-		return "/models"
-	case StyleGoogleGenAI:
-		return "/models"
-	case StyleCfAiGateway:
-		return "/ai/gateway"
-	case StyleCfWorkersAi:
-		return "/ai/run"
-	default:
-		return "/chat/completions"
-	}
-}
-
 // StyleContentType returns the Content-Type header for a given style
 func StyleContentType(style Style) string {
 	return "application/json"
