@@ -186,82 +186,14 @@ func (c *ChatCompletions) DoChatCompletionsStream(p *services.ProviderImpl, req 
 			if event.Done {
 				return
 			}
-			if event.Data != nil {
+			if event.RawData != nil {
 				result := &formats.OpenAIChatResponse{}
-				if id, ok := event.Data["id"].(string); ok {
-					result.ID = id
-				}
-				if obj, ok := event.Data["object"].(string); ok {
-					result.Object = obj
-				}
-				if model, ok := event.Data["model"].(string); ok {
-					result.Model = model
-				}
-				if choices, ok := event.Data["choices"].([]interface{}); ok {
-					for _, ch := range choices {
-						if chMap, ok := ch.(map[string]interface{}); ok {
-							choice := formats.Choice{}
-							if idx, ok := chMap["index"].(float64); ok {
-								choice.Index = int(idx)
-							}
-							if delta, ok := chMap["delta"].(map[string]interface{}); ok {
-								msg := &formats.Message{}
-								if role, ok := delta["role"].(string); ok {
-									msg.Role = role
-								}
-								if content, ok := delta["content"].(string); ok {
-									msg.Content = content
-								}
-								// Parse tool_calls from delta
-								if toolCalls, ok := delta["tool_calls"].([]interface{}); ok {
-									for _, tc := range toolCalls {
-										if tcMap, ok := tc.(map[string]interface{}); ok {
-											toolCall := formats.ToolCall{}
-											if tcIdx, ok := tcMap["index"].(float64); ok {
-												toolCall.Index = int(tcIdx)
-											}
-											if id, ok := tcMap["id"].(string); ok {
-												toolCall.ID = id
-											}
-											if tcType, ok := tcMap["type"].(string); ok {
-												toolCall.Type = tcType
-											}
-											if fn, ok := tcMap["function"].(map[string]interface{}); ok {
-												toolCall.Function = &struct {
-													Name      string `json:"name,omitempty"`
-													Arguments string `json:"arguments,omitempty"`
-												}{}
-												if name, ok := fn["name"].(string); ok {
-													toolCall.Function.Name = name
-												}
-												if args, ok := fn["arguments"].(string); ok {
-													toolCall.Function.Arguments = args
-												}
-											}
-											msg.ToolCalls = append(msg.ToolCalls, toolCall)
-										}
-									}
-								}
-								choice.Delta = msg
-							}
-							if fr, ok := chMap["finish_reason"].(string); ok {
-								choice.FinishReason = fr
-							}
-							result.Choices = append(result.Choices, choice)
-						}
+				if err := result.FromJSON(event.RawData); err != nil {
+					if Logger != nil {
+						Logger.Error("DoChatCompletionsStream failed to parse chunk", zap.Error(err))
 					}
-				}
-				if usage, ok := event.Data["usage"].(map[string]interface{}); ok {
-					result.Usage = &formats.Usage{}
-					if pt, ok := usage["prompt_tokens"].(float64); ok {
-						result.Usage.PromptTokens = int(pt)
-					}
-					if ct, ok := usage["completion_tokens"].(float64); ok {
-						result.Usage.CompletionTokens = int(ct)
-					}
-					if tt, ok := usage["total_tokens"].(float64); ok {
-						result.Usage.TotalTokens = int(tt)
-					}
+					chunks <- drivers.ChatCompletionsStreamChunk{RuntimeError: err}
+					return
 				}
 				chunks <- drivers.ChatCompletionsStreamChunk{Data: result}
 			}

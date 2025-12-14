@@ -11,9 +11,10 @@ import (
 
 // Event represents a single SSE event
 type Event struct {
-	Data  map[string]any
-	Error error
-	Done  bool
+	Data    map[string]any
+	RawData []byte // Raw JSON bytes for passthrough
+	Error   error
+	Done    bool
 }
 
 // Reader provides a streaming SSE parser
@@ -106,9 +107,10 @@ func (r *Reader) parseEvent(payload string) Event {
 		return Event{Done: true}
 	}
 
+	rawBytes := []byte(payload)
 	var data map[string]any
-	if err := json.Unmarshal([]byte(payload), &data); err != nil {
+	if err := json.Unmarshal(rawBytes, &data); err != nil {
 		return Event{Error: err}
 	}
-	return Event{Data: data}
+	return Event{Data: data, RawData: rawBytes}
 }

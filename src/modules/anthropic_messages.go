@@ -97,21 +97,18 @@ func (m *AnthropicMessagesModule) serveMessages(
 	inputStyle := styles.StyleAnthropic
 	outputStyle := p.impl.Style
 
-	var providerReq formats.ManagedRequest
-	if styles.CanPassthrough(inputStyle, outputStyle) {
-		providerReq = req
-		if err := req.MergeFrom(originalBody); err != nil {
-			m.logger.Warn("Failed to merge original request extras", zap.Error(err))
-		}
-	} else {
-		converter := &styles.DefaultConverter{}
-		converted, err := converter.ConvertRequest(req, inputStyle, outputStyle)
-		if err != nil {
-			m.logger.Error("Failed to convert request format", zap.Error(err))
-			http.Error(w, "Format conversion error", http.StatusInternalServerError)
-			return nil
-		}
-		providerReq = converted
+	// Merge original request extras for passthrough of unknown fields
+	if err := req.MergeFrom(originalBody); err != nil {
+		m.logger.Warn("Failed to merge original request extras", zap.Error(err))
+	}
+
+	// Convert request format (passthrough if same style)
+	converter := &styles.DefaultConverter{}
+	providerReq, err := converter.ConvertRequest(req, inputStyle, outputStyle)
+	if err != nil {
+		m.logger.Error("Failed to convert request format", zap.Error(err))
+		http.Error(w, "Format conversion error", http.StatusInternalServerError)
+		return nil
 	}
 
 	hres, res, err := cmd.DoMessages(&p.impl, providerReq, r)
@@ -122,13 +119,11 @@ func (m *AnthropicMessagesModule) serveMessages(
 		return err
 	}
 
-	if !styles.CanPassthrough(inputStyle, outputStyle) && res != nil {
-		converter := &styles.DefaultConverter{}
-		converted, err := converter.ConvertResponse(res, outputStyle, inputStyle)
+	// Convert response back to input style (passthrough if same style)
+	if res != nil {
+		res, err = converter.ConvertResponse(res, outputStyle, inputStyle)
 		if err != nil {
 			m.logger.Error("Failed to convert response format", zap.Error(err))
-		} else {
-			res = converted
 		}
 	}
 
@@ -168,22 +163,19 @@ func (m *AnthropicMessagesModule) serveMessagesStream(
 	inputStyle := styles.StyleAnthropic
 	outputStyle := p.impl.Style
 
-	var providerReq formats.ManagedRequest
-	if styles.CanPassthrough(inputStyle, outputStyle) {
-		providerReq = req
-		if err := req.MergeFrom(originalBody); err != nil {
-			m.logger.Warn("Failed to merge original request extras", zap.Error(err))
-		}
-	} else {
-		converter := &styles.DefaultConverter{}
-		converted, err := converter.ConvertRequest(req, inputStyle, outputStyle)
-		if err != nil {
-			m.logger.Error("Failed to convert request format", zap.Error(err))
-			_ = sseWriter.WriteError("Format conversion error")
-			_ = sseWriter.WriteDone()
-			return nil
-		}
-		providerReq = converted
+	// Merge original request extras for passthrough of unknown fields
+	if err := req.MergeFrom(originalBody); err != nil {
+		m.logger.Warn("Failed to merge original request extras", zap.Error(err))
+	}
+
+	// Convert request format (passthrough if same style)
+	converter := &styles.DefaultConverter{}
+	providerReq, err := converter.ConvertRequest(req, inputStyle, outputStyle)
+	if err != nil {
+		m.logger.Error("Failed to convert request format", zap.Error(err))
+		_ = sseWriter.WriteError("Format conversion error")
+		_ = sseWriter.WriteDone()
+		return nil
 	}
 
 	hres, stream, err := cmd.DoMessagesStream(&p.impl, providerReq, r)
@@ -197,7 +189,6 @@ func (m *AnthropicMessagesModule) serveMessagesStream(
 	}
 
 	var lastChunk formats.ManagedResponse
-	converter := &styles.DefaultConverter{}
 
 	for chunk := range stream {
 		if chunk.RuntimeError != nil {
@@ -209,7 +200,8 @@ func (m *AnthropicMessagesModule) serveMessagesStream(
 
 		chunkData := chunk.Data
 
-		if !styles.CanPassthrough(inputStyle, outputStyle) && chunkData != nil {
+		// Convert chunk (passthrough if same style)
+		if chunkData != nil {
 			converted, err := converter.ConvertResponse(chunkData, outputStyle, inputStyle)
 			if err == nil {
 				chunkData = converted

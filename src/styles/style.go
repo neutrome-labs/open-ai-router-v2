@@ -40,11 +40,6 @@ func ParseStyle(s string) Style {
 	}
 }
 
-// CanPassthrough returns true if input and output styles are compatible for direct passthrough
-func CanPassthrough(inputStyle, outputStyle Style) bool {
-	return inputStyle == outputStyle
-}
-
 // RequestConverter converts requests between styles
 type RequestConverter interface {
 	// Convert transforms a request from one style to another
