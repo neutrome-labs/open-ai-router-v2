@@ -212,6 +212,36 @@ func (c *ChatCompletions) DoChatCompletionsStream(p *services.ProviderImpl, req 
 								if content, ok := delta["content"].(string); ok {
 									msg.Content = content
 								}
+								// Parse tool_calls from delta
+								if toolCalls, ok := delta["tool_calls"].([]interface{}); ok {
+									for _, tc := range toolCalls {
+										if tcMap, ok := tc.(map[string]interface{}); ok {
+											toolCall := formats.ToolCall{}
+											if tcIdx, ok := tcMap["index"].(float64); ok {
+												toolCall.Index = int(tcIdx)
+											}
+											if id, ok := tcMap["id"].(string); ok {
+												toolCall.ID = id
+											}
+											if tcType, ok := tcMap["type"].(string); ok {
+												toolCall.Type = tcType
+											}
+											if fn, ok := tcMap["function"].(map[string]interface{}); ok {
+												toolCall.Function = &struct {
+													Name      string `json:"name,omitempty"`
+													Arguments string `json:"arguments,omitempty"`
+												}{}
+												if name, ok := fn["name"].(string); ok {
+													toolCall.Function.Name = name
+												}
+												if args, ok := fn["arguments"].(string); ok {
+													toolCall.Function.Arguments = args
+												}
+											}
+											msg.ToolCalls = append(msg.ToolCalls, toolCall)
+										}
+									}
+								}
 								choice.Delta = msg
 							}
 							if fr, ok := chMap["finish_reason"].(string); ok {
