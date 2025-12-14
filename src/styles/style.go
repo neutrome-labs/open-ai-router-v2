@@ -19,7 +19,8 @@ const (
 	StyleOpenAIResponses Style = "openai-responses"
 	StyleAnthropic       Style = "anthropic-messages"
 	StyleGoogleGenAI     Style = "google-genai"
-	StyleCloudflare      Style = "cloudflare"
+	StyleCfAiGateway     Style = "cloudflare-ai-gateway"
+	StyleCfWorkersAi     Style = "cloudflare-workers-ai"
 )
 
 // ParseStyle parses a style string, defaulting to OpenAI chat completions
@@ -33,8 +34,10 @@ func ParseStyle(s string) Style {
 		return StyleAnthropic
 	case "google-genai", "google":
 		return StyleGoogleGenAI
-	case "cloudflare", "cf":
-		return StyleCloudflare
+	case "cloudflare-ai-gateway":
+		return StyleCfAiGateway
+	case "cloudflare-workers-ai", "cloudflare", "cf":
+		return StyleCfWorkersAi
 	default:
 		return StyleOpenAIChat
 	}
@@ -72,7 +75,9 @@ func StyleEndpoint(style Style, action string) string {
 		return "/models"
 	case StyleGoogleGenAI:
 		return "/models"
-	case StyleCloudflare:
+	case StyleCfAiGateway:
+		return "/ai/gateway"
+	case StyleCfWorkersAi:
 		return "/ai/run"
 	default:
 		return "/chat/completions"

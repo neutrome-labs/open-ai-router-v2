@@ -102,7 +102,7 @@ type ToolFunction struct {
 
 // ToolCall represents a tool call in a response
 type ToolCall struct {
-	Index    int    `json:"index,omitempty"` // Index for streaming tool calls
+	Index    int    `json:"index"` // Index for streaming tool calls - always included
 	ID       string `json:"id,omitempty"`
 	Type     string `json:"type,omitempty"`
 	Function *struct {
