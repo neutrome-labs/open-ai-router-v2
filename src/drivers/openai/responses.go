@@ -31,10 +31,11 @@ func (c *Responses) createRequest(p *services.ProviderImpl, req formats.ManagedR
 	targetHeader.Set("Content-Type", "application/json")
 
 	httpReq := &http.Request{
-		Method: "POST",
-		URL:    &targetUrl,
-		Header: targetHeader,
-		Body:   io.NopCloser(bytes.NewReader(body)),
+		Method:        "POST",
+		URL:           &targetUrl,
+		Header:        targetHeader,
+		Body:          io.NopCloser(bytes.NewReader(body)),
+		ContentLength: int64(len(body)),
 	}
 	httpReq = httpReq.WithContext(r.Context())
 

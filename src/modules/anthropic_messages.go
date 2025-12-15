@@ -57,7 +57,7 @@ func (m *AnthropicMessagesModule) Provision(ctx caddy.Context) error {
 func (m *AnthropicMessagesModule) resolvePlugins(r *http.Request, req formats.ManagedRequest) *plugins.PluginChain {
 	chain := plugins.NewPluginChain()
 
-	for _, mp := range plugins.MandatoryPlugins {
+	for _, mp := range plugins.HeadPlugins {
 		if p, ok := plugins.GetPlugin(mp[0]); ok {
 			chain.Add(p, mp[1])
 		}
@@ -79,6 +79,12 @@ func (m *AnthropicMessagesModule) resolvePlugins(r *http.Request, req formats.Ma
 					chain.Add(p, "")
 				}
 			}
+		}
+	}
+
+	for _, mp := range plugins.TailPlugins {
+		if p, ok := plugins.GetPlugin(mp[0]); ok {
+			chain.Add(p, mp[1])
 		}
 	}
 

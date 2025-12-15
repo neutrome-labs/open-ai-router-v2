@@ -11,10 +11,14 @@ var Registry = map[string]Plugin{
 	"zipsc":   &Zip{PreserveFirst: true, DisableCache: true},
 }
 
-// MandatoryPlugins are plugins that are always executed
-var MandatoryPlugins = [][2]string{
-	{"posthog", ""},
+// HeadPlugins are plugins that are always executed before others
+var HeadPlugins = [][2]string{
 	{"models", ""},
+}
+
+// TailPlugins are plugins that are always executed after others
+var TailPlugins = [][2]string{
+	{"posthog", ""},
 }
 
 // GetPlugin returns a plugin by name

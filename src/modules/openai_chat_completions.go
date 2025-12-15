@@ -59,7 +59,7 @@ func (m *OpenAIChatCompletionsModule) resolvePlugins(r *http.Request, req format
 	chain := plugins.NewPluginChain()
 
 	// Add mandatory plugins
-	for _, mp := range plugins.MandatoryPlugins {
+	for _, mp := range plugins.HeadPlugins {
 		if p, ok := plugins.GetPlugin(mp[0]); ok {
 			chain.Add(p, mp[1])
 		}
@@ -113,6 +113,13 @@ func (m *OpenAIChatCompletionsModule) resolvePlugins(r *http.Request, req format
 					chain.Add(p, "")
 				}
 			}
+		}
+	}
+
+	// Add tail plugins
+	for _, mp := range plugins.TailPlugins {
+		if p, ok := plugins.GetPlugin(mp[0]); ok {
+			chain.Add(p, mp[1])
 		}
 	}
 
