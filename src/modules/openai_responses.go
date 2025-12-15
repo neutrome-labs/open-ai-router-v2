@@ -260,6 +260,14 @@ func (m *OpenAIResponsesModule) ServeHTTP(w http.ResponseWriter, r *http.Request
 		return nil
 	}
 
+	// Collect incoming auth early so plugins can rely on context values
+	r, err = router.impl.AuthManager.CollectIncomingAuth(r)
+	if err != nil {
+		m.logger.Error("failed to collect incoming auth", zap.Error(err))
+		http.Error(w, "authentication error", http.StatusUnauthorized)
+		return nil
+	}
+
 	chain := m.resolvePlugins(r, req)
 	providers, model := router.ResolveProvidersOrderAndModel(req.GetModel())
 	req.SetModel(model)

@@ -173,6 +173,20 @@ type ManagedResponse interface {
 }
 ```
 
+### AuthManager (services/auth_manager.go)
+```go
+type AuthManager interface {
+    // CollectIncomingAuth is called early in request handling (after router resolution)
+    // to allow auth managers to set context values that plugins can depend on.
+    // This is called once per incoming request before any provider attempts.
+    CollectIncomingAuth(r *http.Request) (*http.Request, error)
+
+    // CollectTargetAuth is called when preparing the outgoing request to a provider.
+    // It returns the auth value (e.g., API key) to use for the provider request.
+    CollectTargetAuth(scope string, p *ProviderImpl, rIn, rOut *http.Request) (string, error)
+}
+```
+
 ### Plugin Interfaces (plugins/plugin.go)
 ```go
 type BeforePlugin interface {

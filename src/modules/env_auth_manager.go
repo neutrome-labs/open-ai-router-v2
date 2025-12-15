@@ -62,6 +62,13 @@ func (m *EnvAuthManagerModule) ServeHTTP(w http.ResponseWriter, r *http.Request,
 	return next.ServeHTTP(w, r)
 }
 
+// CollectIncomingAuth is called early in request handling to set up context values.
+// For EnvAuthManager, this is a no-op since we don't have user-specific auth from the incoming request.
+// The context values are set later in CollectTargetAuth when we know which provider is being used.
+func (m *EnvAuthManagerModule) CollectIncomingAuth(r *http.Request) (*http.Request, error) {
+	return r, nil
+}
+
 func (m *EnvAuthManagerModule) CollectTargetAuth(scope string, p *services.ProviderImpl, rIn, rOut *http.Request) (string, error) {
 	// Try multiple environment variable patterns
 	patterns := []string{
