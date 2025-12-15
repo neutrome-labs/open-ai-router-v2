@@ -10,6 +10,7 @@ var Registry = map[string]Plugin{
 	"zipc":     &Zip{PreserveFirst: true, DisableCache: false},
 	"zips":     &Zip{PreserveFirst: false, DisableCache: true},
 	"zipsc":    &Zip{PreserveFirst: true, DisableCache: true},
+	"stools":   &Stools{},
 }
 
 // HeadPlugins are plugins that are always executed before others
