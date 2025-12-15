@@ -206,7 +206,29 @@ type StreamChunkPlugin interface {
 type StreamEndPlugin interface {
     StreamEnd(params string, p *services.ProviderImpl, r *http.Request, req formats.ManagedRequest, hres *http.Response, lastChunk formats.ManagedResponse) error
 }
+
+// RecursiveHandlerPlugin can intercept request flow and invoke handler recursively
+// Used for fallback (models plugin) and parallel execution (parallel plugin)
+type RecursiveHandlerPlugin interface {
+    RecursiveHandler(params string, invoker HandlerInvoker, w http.ResponseWriter, r *http.Request, req formats.ManagedRequest) (handled bool, err error)
+}
+
+// HandlerInvoker allows plugins to invoke the outer handler recursively
+type HandlerInvoker interface {
+    InvokeHandler(w http.ResponseWriter, r *http.Request, req formats.ManagedRequest) error
+    InvokeHandlerCapture(r *http.Request, req formats.ManagedRequest) (formats.ManagedResponse, error)
+}
 ```
+
+## Built-in Plugins
+
+| Plugin | Description | Model Syntax |
+|--------|-------------|--------------|
+| `models` | Fallback: tries comma-separated models in order | `gpt-4,claude-3,gemini` |
+| `parallel` | Parallel: calls pipe-separated models in parallel, merges choices | `gpt-4\|claude-3\|gemini` |
+| `fuzz` | Fuzzy model name matching | (automatic) |
+| `zip` | Auto-compaction for context | `model+zip` |
+| `posthog` | PostHog analytics (tail plugin) | (automatic) |
 
 ## Documentation Maintenance
 

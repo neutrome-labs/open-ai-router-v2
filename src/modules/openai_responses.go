@@ -24,6 +24,54 @@ type OpenAIResponsesModule struct {
 	logger     *zap.Logger
 }
 
+// responsesInvoker implements plugins.HandlerInvoker for recursive handler calls.
+type responsesInvoker struct {
+	module  *OpenAIResponsesModule
+	router  *RouterModule
+	chain   *plugins.PluginChain
+	reqBody []byte
+	r       *http.Request
+}
+
+// InvokeHandler invokes the handler with a modified request, writing to the ResponseWriter.
+func (inv *responsesInvoker) InvokeHandler(w http.ResponseWriter, r *http.Request, req formats.ManagedRequest) error {
+	return inv.module.handleRequest(inv.router, inv.chain, inv.reqBody, w, r, req.(*formats.OpenAIResponsesRequest))
+}
+
+// InvokeHandlerCapture invokes the handler and captures the response instead of writing to w.
+func (inv *responsesInvoker) InvokeHandlerCapture(r *http.Request, req formats.ManagedRequest) (formats.ManagedResponse, error) {
+	capture := &responsesCaptureWriter{}
+	err := inv.module.handleRequest(inv.router, inv.chain, inv.reqBody, capture, r, req.(*formats.OpenAIResponsesRequest))
+	if err != nil {
+		return nil, err
+	}
+	return capture.response, nil
+}
+
+// responsesCaptureWriter captures response instead of writing to HTTP
+type responsesCaptureWriter struct {
+	response formats.ManagedResponse
+	headers  http.Header
+}
+
+func (w *responsesCaptureWriter) Header() http.Header {
+	if w.headers == nil {
+		w.headers = make(http.Header)
+	}
+	return w.headers
+}
+
+func (w *responsesCaptureWriter) Write(data []byte) (int, error) {
+	resp := &formats.OpenAIResponsesResponse{}
+	if err := resp.FromJSON(data); err != nil {
+		return 0, err
+	}
+	w.response = resp
+	return len(data), nil
+}
+
+func (w *responsesCaptureWriter) WriteHeader(statusCode int) {}
+
 func ParseOpenAIResponsesModule(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
 	var m OpenAIResponsesModule
 	for h.Next() {
@@ -269,11 +317,51 @@ func (m *OpenAIResponsesModule) ServeHTTP(w http.ResponseWriter, r *http.Request
 	}
 
 	chain := m.resolvePlugins(r, req)
-	providers, model := router.ResolveProvidersOrderAndModel(req.GetModel())
-	req.SetModel(model)
 
 	traceId := uuid.New().String()
 	r = r.WithContext(context.WithValue(r.Context(), plugins.ContextTraceID(), traceId))
+
+	// Create invoker for recursive handler plugins
+	invoker := &responsesInvoker{
+		module:  m,
+		router:  router,
+		chain:   chain,
+		reqBody: reqBody,
+		r:       r,
+	}
+
+	// Check if any recursive handler plugin wants to handle this request
+	handled, err := chain.RunRecursiveHandlers(invoker, w, r, req)
+	if handled {
+		if err != nil {
+			m.logger.Error("recursive handler plugin failed", zap.Error(err))
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return nil
+	}
+
+	// Normal flow - handle request directly
+	err = m.handleRequest(router, chain, reqBody, w, r, req)
+	if err != nil {
+		m.logger.Error("request handling failed", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return nil
+	}
+
+	return nil
+}
+
+// handleRequest handles a single request to providers (used both directly and by recursive plugins).
+func (m *OpenAIResponsesModule) handleRequest(
+	router *RouterModule,
+	chain *plugins.PluginChain,
+	reqBody []byte,
+	w http.ResponseWriter,
+	r *http.Request,
+	req *formats.OpenAIResponsesRequest,
+) error {
+	providers, model := router.ResolveProvidersOrderAndModel(req.GetModel())
+	req.SetModel(model)
 
 	var displayErr error
 	for _, name := range providers {
@@ -320,12 +408,10 @@ func (m *OpenAIResponsesModule) ServeHTTP(w http.ResponseWriter, r *http.Request
 	}
 
 	if displayErr != nil {
-		m.logger.Error("all providers failed", zap.String("model", model), zap.Error(displayErr))
-		http.Error(w, displayErr.Error(), http.StatusInternalServerError)
-		return nil
+		return displayErr
 	}
 
-	return next.ServeHTTP(w, r)
+	return nil
 }
 
 var (

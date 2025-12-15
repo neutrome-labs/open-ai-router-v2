@@ -24,6 +24,54 @@ type AnthropicMessagesModule struct {
 	logger     *zap.Logger
 }
 
+// anthropicInvoker implements plugins.HandlerInvoker for recursive handler calls.
+type anthropicInvoker struct {
+	module  *AnthropicMessagesModule
+	router  *RouterModule
+	chain   *plugins.PluginChain
+	reqBody []byte
+	r       *http.Request
+}
+
+// InvokeHandler invokes the handler with a modified request, writing to the ResponseWriter.
+func (inv *anthropicInvoker) InvokeHandler(w http.ResponseWriter, r *http.Request, req formats.ManagedRequest) error {
+	return inv.module.handleRequest(inv.router, inv.chain, inv.reqBody, w, r, req.(*formats.AnthropicRequest))
+}
+
+// InvokeHandlerCapture invokes the handler and captures the response instead of writing to w.
+func (inv *anthropicInvoker) InvokeHandlerCapture(r *http.Request, req formats.ManagedRequest) (formats.ManagedResponse, error) {
+	capture := &anthropicCaptureWriter{}
+	err := inv.module.handleRequest(inv.router, inv.chain, inv.reqBody, capture, r, req.(*formats.AnthropicRequest))
+	if err != nil {
+		return nil, err
+	}
+	return capture.response, nil
+}
+
+// anthropicCaptureWriter captures response instead of writing to HTTP
+type anthropicCaptureWriter struct {
+	response formats.ManagedResponse
+	headers  http.Header
+}
+
+func (w *anthropicCaptureWriter) Header() http.Header {
+	if w.headers == nil {
+		w.headers = make(http.Header)
+	}
+	return w.headers
+}
+
+func (w *anthropicCaptureWriter) Write(data []byte) (int, error) {
+	resp := &formats.AnthropicResponse{}
+	if err := resp.FromJSON(data); err != nil {
+		return 0, err
+	}
+	w.response = resp
+	return len(data), nil
+}
+
+func (w *anthropicCaptureWriter) WriteHeader(statusCode int) {}
+
 func ParseAnthropicMessagesModule(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
 	var m AnthropicMessagesModule
 	for h.Next() {
@@ -268,11 +316,51 @@ func (m *AnthropicMessagesModule) ServeHTTP(w http.ResponseWriter, r *http.Reque
 	}
 
 	chain := m.resolvePlugins(r, req)
-	providers, model := router.ResolveProvidersOrderAndModel(req.GetModel())
-	req.SetModel(model)
 
 	traceId := uuid.New().String()
 	r = r.WithContext(context.WithValue(r.Context(), plugins.ContextTraceID(), traceId))
+
+	// Create invoker for recursive handler plugins
+	invoker := &anthropicInvoker{
+		module:  m,
+		router:  router,
+		chain:   chain,
+		reqBody: reqBody,
+		r:       r,
+	}
+
+	// Check if any recursive handler plugin wants to handle this request
+	handled, err := chain.RunRecursiveHandlers(invoker, w, r, req)
+	if handled {
+		if err != nil {
+			m.logger.Error("recursive handler plugin failed", zap.Error(err))
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return nil
+	}
+
+	// Normal flow - handle request directly
+	err = m.handleRequest(router, chain, reqBody, w, r, req)
+	if err != nil {
+		m.logger.Error("request handling failed", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return nil
+	}
+
+	return nil
+}
+
+// handleRequest handles a single request to providers (used both directly and by recursive plugins).
+func (m *AnthropicMessagesModule) handleRequest(
+	router *RouterModule,
+	chain *plugins.PluginChain,
+	reqBody []byte,
+	w http.ResponseWriter,
+	r *http.Request,
+	req *formats.AnthropicRequest,
+) error {
+	providers, model := router.ResolveProvidersOrderAndModel(req.GetModel())
+	req.SetModel(model)
 
 	var displayErr error
 	for _, name := range providers {
@@ -307,18 +395,23 @@ func (m *AnthropicMessagesModule) ServeHTTP(w http.ResponseWriter, r *http.Reque
 			err = m.serveMessages(p, cmd, providerReq, reqBody, chain, w, r)
 		}
 
+		if err != nil {
+			if displayErr == nil {
+				displayErr = err
+			}
+			continue
+		}
+
 		w.Header().Set("X-Real-Provider-Id", name)
 		w.Header().Set("X-Real-Model-Id", model)
 		return nil
 	}
 
 	if displayErr != nil {
-		m.logger.Error("all providers failed", zap.String("model", model), zap.Error(displayErr))
-		http.Error(w, displayErr.Error(), http.StatusInternalServerError)
-		return nil
+		return displayErr
 	}
 
-	return next.ServeHTTP(w, r)
+	return nil
 }
 
 var (

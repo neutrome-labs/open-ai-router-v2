@@ -20,6 +20,20 @@ type Plugin interface {
 	Name() string
 }
 
+// HandlerInvoker allows plugins to invoke the outer handler recursively.
+// This is used by plugins like "models" (fallback) and "parallel" (fan-out).
+type HandlerInvoker interface {
+	// InvokeHandler invokes the outer handler with the given request.
+	// The request should already have the model set appropriately.
+	// Returns nil on success, error on failure.
+	InvokeHandler(w http.ResponseWriter, r *http.Request, req formats.ManagedRequest) error
+
+	// InvokeHandlerCapture invokes the handler and captures the response instead of writing to w.
+	// Used by parallel plugin to capture multiple responses for merging.
+	// Returns the captured response on success, or error on failure.
+	InvokeHandlerCapture(r *http.Request, req formats.ManagedRequest) (formats.ManagedResponse, error)
+}
+
 // BeforePlugin processes requests before sending to provider
 type BeforePlugin interface {
 	Plugin
@@ -58,6 +72,23 @@ type ErrorPlugin interface {
 	// hres may be nil if the error occurred before receiving a response
 	// providerErr is the error returned by the provider
 	OnError(params string, p *services.ProviderImpl, r *http.Request, req formats.ManagedRequest, hres *http.Response, providerErr error) error
+}
+
+// RecursiveHandlerPlugin can intercept the request flow and invoke the handler recursively.
+// This is used for plugins that need to make multiple calls (fallback, parallel, etc.).
+// When RecursiveHandler returns handled=true, the module should not proceed with normal flow.
+type RecursiveHandlerPlugin interface {
+	Plugin
+	// RecursiveHandler is called before normal provider iteration.
+	// If handled is true, the plugin has handled the request (either success or error).
+	// If handled is false, normal provider iteration should proceed.
+	RecursiveHandler(
+		params string,
+		invoker HandlerInvoker,
+		w http.ResponseWriter,
+		r *http.Request,
+		req formats.ManagedRequest,
+	) (handled bool, err error)
 }
 
 // FullPlugin implements all plugin interfaces
@@ -210,6 +241,38 @@ func (c *PluginChain) RunError(p *services.ProviderImpl, r *http.Request, req fo
 		Logger.Debug("RunError completed")
 	}
 	return nil
+}
+
+// RunRecursiveHandlers executes all RecursiveHandlerPlugin implementations.
+// Returns (true, nil) if a plugin handled the request successfully.
+// Returns (true, err) if a plugin handled the request but failed.
+// Returns (false, nil) if no plugin wants to handle the request recursively.
+func (c *PluginChain) RunRecursiveHandlers(invoker HandlerInvoker, w http.ResponseWriter, r *http.Request, req formats.ManagedRequest) (bool, error) {
+	if Logger != nil {
+		Logger.Debug("RunRecursiveHandlers starting", zap.Int("plugin_count", len(c.plugins)))
+	}
+	for _, pi := range c.plugins {
+		if rh, ok := pi.Plugin.(RecursiveHandlerPlugin); ok {
+			if Logger != nil {
+				Logger.Debug("Running RecursiveHandler plugin", zap.String("plugin", pi.Plugin.Name()), zap.String("params", pi.Params))
+			}
+			handled, err := rh.RecursiveHandler(pi.Params, invoker, w, r, req)
+			if handled {
+				if Logger != nil {
+					if err != nil {
+						Logger.Debug("RecursiveHandler plugin handled with error", zap.String("plugin", pi.Plugin.Name()), zap.Error(err))
+					} else {
+						Logger.Debug("RecursiveHandler plugin handled successfully", zap.String("plugin", pi.Plugin.Name()))
+					}
+				}
+				return true, err
+			}
+		}
+	}
+	if Logger != nil {
+		Logger.Debug("RunRecursiveHandlers completed - no plugin handled")
+	}
+	return false, nil
 }
 
 // GetPlugins returns all plugins in the chain

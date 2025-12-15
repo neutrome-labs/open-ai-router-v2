@@ -114,13 +114,44 @@ ai_list_models {
 2. **Default mapping**: Configure per-model defaults (if implemented)
 3. **Fallback**: Uses providers in definition order
 
+### Model Fallback (models plugin)
+
+Use comma-separated models to try them in order on failure:
+
+```
+model="gpt-4,claude-3,gemini-pro"
+```
+
+If `gpt-4` fails, it will try `claude-3`, then `gemini-pro`.
+
+### Parallel Execution (parallel plugin)
+
+Use pipe-separated models to call them in parallel and merge responses:
+
+```
+model="gpt-4|claude-3|gemini-pro"
+```
+
+All models are called simultaneously, and their choices are merged into a single response.
+Note: Streaming is automatically disabled for parallel requests.
+
+### Combining with Plugins
+
+Both syntaxes work with plugin suffixes:
+
+```
+model="gpt-4,claude-3+zip"      # Fallback with zip compression
+model="gpt-4|claude-3+fuzz"    # Parallel with fuzzy matching
+```
+
 ## Plugins
 
 Plugins process requests before/after provider calls.
 
 **Built-in plugins:**
 - `posthog` - Observability events (with stream chunk accumulation)
-- `models` - AI Council (multiple models in parallel)
+- `models` - Model fallback: tries comma-separated models in order
+- `parallel` - Parallel execution: calls pipe-separated models simultaneously
 - `fuzz` - Fuzzy model name matching
 - `zip` - Auto-compact long conversations (with caching)
 - `zipc` - Like `zip`, but preserve the first user message

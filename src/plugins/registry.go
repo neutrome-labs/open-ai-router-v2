@@ -2,18 +2,21 @@ package plugins
 
 // Registry holds all available plugins
 var Registry = map[string]Plugin{
-	"posthog": &Posthog{},
-	"models":  &Models{},
-	"fuzz":    &Fuzz{},
-	"zip":     &Zip{PreserveFirst: false, DisableCache: false},
-	"zipc":    &Zip{PreserveFirst: true, DisableCache: false},
-	"zips":    &Zip{PreserveFirst: false, DisableCache: true},
-	"zipsc":   &Zip{PreserveFirst: true, DisableCache: true},
+	"posthog":  &Posthog{},
+	"models":   &Models{},
+	"parallel": &Parallel{},
+	"fuzz":     &Fuzz{},
+	"zip":      &Zip{PreserveFirst: false, DisableCache: false},
+	"zipc":     &Zip{PreserveFirst: true, DisableCache: false},
+	"zips":     &Zip{PreserveFirst: false, DisableCache: true},
+	"zipsc":    &Zip{PreserveFirst: true, DisableCache: true},
 }
 
 // HeadPlugins are plugins that are always executed before others
+// Order matters: models (fallback) should run before parallel (fan-out)
 var HeadPlugins = [][2]string{
 	{"models", ""},
+	{"parallel", ""},
 }
 
 // TailPlugins are plugins that are always executed after others
