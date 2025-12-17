@@ -1,12 +1,12 @@
 package plugins
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"sync"
 
 	"github.com/neutrome-labs/open-ai-router/src/drivers"
-	"github.com/neutrome-labs/open-ai-router/src/formats"
 	"github.com/neutrome-labs/open-ai-router/src/services"
 	"go.uber.org/zap"
 )
@@ -18,7 +18,7 @@ type Fuzz struct {
 
 func (f *Fuzz) Name() string { return "fuzz" }
 
-func (f *Fuzz) Before(params string, p *services.ProviderImpl, r *http.Request, req formats.ManagedRequest) (formats.ManagedRequest, error) {
+func (f *Fuzz) Before(params string, p *services.ProviderService, r *http.Request, req json.RawMessage) (json.RawMessage, error) {
 	// Fuzz requires a provider to list models - skip if not provided
 	if p == nil {
 		if Logger != nil {
@@ -27,7 +27,14 @@ func (f *Fuzz) Before(params string, p *services.ProviderImpl, r *http.Request, 
 		return req, nil
 	}
 
-	model := req.GetModel()
+	// Extract model from request
+	var known struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(req, &known); err != nil {
+		return req, nil
+	}
+	model := known.Model
 	cacheKey := p.Name + "_" + model
 
 	if Logger != nil {
@@ -43,8 +50,7 @@ func (f *Fuzz) Before(params string, p *services.ProviderImpl, r *http.Request, 
 				zap.String("cacheKey", cacheKey),
 				zap.String("resolvedModel", cachedModel.(string)))
 		}
-		req.SetModel(cachedModel.(string))
-		return req, nil
+		return setModelInRequest(req, cachedModel.(string)), nil
 	}
 	if Logger != nil {
 		Logger.Debug("fuzz cache MISS", zap.String("cacheKey", cacheKey))
@@ -67,7 +73,7 @@ func (f *Fuzz) Before(params string, p *services.ProviderImpl, r *http.Request, 
 	}
 
 	type ListModelsCommand interface {
-		DoListModels(p *services.ProviderImpl, r *http.Request) ([]drivers.ListModelsModel, error)
+		DoListModels(p *services.ProviderService, r *http.Request) ([]drivers.ListModelsModel, error)
 	}
 
 	cmd, ok := listCmd.(ListModelsCommand)
@@ -100,9 +106,8 @@ func (f *Fuzz) Before(params string, p *services.ProviderImpl, r *http.Request, 
 					zap.String("requestedModel", model),
 					zap.String("resolvedModel", m.ID))
 			}
-			req.SetModel(m.ID)
 			f.knownModelsCache.Store(cacheKey, m.ID)
-			return req, nil
+			return setModelInRequest(req, m.ID), nil
 		}
 	}
 
@@ -113,14 +118,19 @@ func (f *Fuzz) Before(params string, p *services.ProviderImpl, r *http.Request, 
 	return req, nil
 }
 
-func (f *Fuzz) After(params string, p *services.ProviderImpl, r *http.Request, req formats.ManagedRequest, hres *http.Response, res formats.ManagedResponse) (formats.ManagedResponse, error) {
-	return res, nil
-}
+// setModelInRequest updates the model field in a JSON request
+func setModelInRequest(req json.RawMessage, model string) json.RawMessage {
+	var data map[string]json.RawMessage
+	if err := json.Unmarshal(req, &data); err != nil {
+		return req
+	}
 
-func (f *Fuzz) AfterChunk(params string, p *services.ProviderImpl, r *http.Request, req formats.ManagedRequest, hres *http.Response, chunk formats.ManagedResponse) (formats.ManagedResponse, error) {
-	return chunk, nil
-}
+	modelJSON, _ := json.Marshal(model)
+	data["model"] = modelJSON
 
-func (f *Fuzz) StreamEnd(params string, p *services.ProviderImpl, r *http.Request, req formats.ManagedRequest, hres *http.Response, lastChunk formats.ManagedResponse) error {
-	return nil
+	result, err := json.Marshal(data)
+	if err != nil {
+		return req
+	}
+	return result
 }

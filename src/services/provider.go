@@ -6,11 +6,11 @@ import (
 	"github.com/neutrome-labs/open-ai-router/src/styles"
 )
 
-// ProviderImpl provides the runtime implementation for a provider
-type ProviderImpl struct {
+// ProviderService provides the runtime implementation for a provider
+type ProviderService struct {
 	Name      string
 	ParsedURL url.URL
 	Style     styles.Style
-	Router    *RouterImpl
+	Router    *RouterService
 	Commands  map[string]any
 }

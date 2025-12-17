@@ -11,7 +11,6 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
-	"github.com/neutrome-labs/open-ai-router/src/drivers/anthropic"
 	"github.com/neutrome-labs/open-ai-router/src/drivers/openai"
 	"github.com/neutrome-labs/open-ai-router/src/services"
 	"github.com/neutrome-labs/open-ai-router/src/styles"
@@ -40,21 +39,20 @@ func GetRouter(name string) (*RouterModule, bool) {
 
 // RouterModule configures providers and routing rules for AI models.
 type RouterModule struct {
-	Name                    string                  `json:"name,omitempty"`
-	AuthManagerName         string                  `json:"auth_manager,omitempty"`
-	Providers               map[string]*ProviderDef `json:"providers,omitempty"`
-	DefaultProviderForModel map[string][]string     `json:"default_provider_for_model,omitempty"`
-	ProviderOrder           []string                `json:"provider_order,omitempty"`
-
-	impl services.RouterImpl
+	Name                    string                     `json:"name,omitempty"`
+	AuthManagerName         string                     `json:"auth_manager,omitempty"`
+	ProviderConfigs         map[string]*ProviderConfig `json:"providers,omitempty"`
+	DefaultProviderForModel map[string][]string        `json:"default_provider_for_model,omitempty"`
+	ProvidersOrder          []string                   `json:"providers_order,omitempty"`
+	Impl                    services.RouterService
 }
 
-// ProviderDef defines a provider's configuration.
-type ProviderDef struct {
+// ProviderConfig defines a provider's configuration.
+type ProviderConfig struct {
 	Name       string `json:"name,omitempty"`
 	APIBaseURL string `json:"api_base_url,omitempty"`
 	Style      string `json:"style,omitempty"`
-	impl       services.ProviderImpl
+	Impl       services.ProviderService
 }
 
 func ParseRouterModule(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
@@ -74,17 +72,17 @@ func (*RouterModule) CaddyModule() caddy.ModuleInfo {
 }
 
 func (m *RouterModule) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
-	m.impl.Mu.Lock()
-	defer m.impl.Mu.Unlock()
+	m.Impl.Mu.Lock()
+	defer m.Impl.Mu.Unlock()
 
-	if m.Providers == nil {
-		m.Providers = make(map[string]*ProviderDef)
+	if m.ProviderConfigs == nil {
+		m.ProviderConfigs = make(map[string]*ProviderConfig)
 	}
 	if m.DefaultProviderForModel == nil {
 		m.DefaultProviderForModel = make(map[string][]string)
 	}
-	if m.ProviderOrder == nil {
-		m.ProviderOrder = []string{}
+	if m.ProvidersOrder == nil {
+		m.ProvidersOrder = []string{}
 	}
 
 	for d.Next() {
@@ -108,10 +106,10 @@ func (m *RouterModule) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.ArgErr()
 				}
 				providerName := strings.ToLower(d.Val())
-				if _, ok := m.Providers[providerName]; ok {
+				if _, ok := m.ProviderConfigs[providerName]; ok {
 					return d.Errf("provider %s already defined", providerName)
 				}
-				p := ProviderDef{Name: providerName}
+				p := ProviderConfig{Name: providerName}
 				for d.NextBlock(1) {
 					switch d.Val() {
 					case "api_base_url":
@@ -131,8 +129,8 @@ func (m *RouterModule) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				if p.APIBaseURL == "" {
 					return d.Errf("provider %s: api_base_url is required", providerName)
 				}
-				m.Providers[providerName] = &p
-				m.ProviderOrder = append(m.ProviderOrder, providerName)
+				m.ProviderConfigs[providerName] = &p
+				m.ProvidersOrder = append(m.ProvidersOrder, providerName)
 			case "default_provider_for_model":
 				args := d.RemainingArgs()
 				if len(args) < 2 {
@@ -154,20 +152,20 @@ func (m *RouterModule) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 }
 
 func (m *RouterModule) Provision(ctx caddy.Context) error {
-	m.impl.Logger = ctx.Logger(m)
-	m.impl.Mu.Lock()
-	defer m.impl.Mu.Unlock()
+	m.Impl.Logger = ctx.Logger(m)
+	m.Impl.Mu.Lock()
+	defer m.Impl.Mu.Unlock()
 
 	if strings.TrimSpace(m.Name) == "" {
 		m.Name = "default"
 	}
 
-	if m.impl.AuthManager == nil {
-		m.impl.AuthManager = services.GetAuthManager(m.AuthManagerName)
+	if m.Impl.Auth == nil {
+		m.Impl.Auth = services.GetAuthService(m.AuthManagerName)
 	}
 
-	for _, name := range m.ProviderOrder {
-		p := m.Providers[name]
+	for _, name := range m.ProvidersOrder {
+		p := m.ProviderConfigs[name]
 
 		if p.APIBaseURL == "" {
 			return fmt.Errorf("provider %s: api_base_url is required", name)
@@ -177,36 +175,30 @@ func (m *RouterModule) Provision(ctx caddy.Context) error {
 			return fmt.Errorf("provider %s: invalid api_base_url '%s': %v", name, p.APIBaseURL, err)
 		}
 
-		providerStyle := styles.ParseStyle(p.Style)
-		p.impl = services.ProviderImpl{
+		providerStyle, err := styles.ParseStyle(p.Style)
+		if err != nil {
+			return fmt.Errorf("provider %s: invalid style '%s': %v", name, p.Style, err)
+		}
+
+		p.Impl = services.ProviderService{
 			Name:      name,
 			ParsedURL: *parsedURL,
 			Style:     providerStyle,
-			Router:    &m.impl,
+			Router:    &m.Impl,
 		}
 
 		// Initialize commands based on style
 		var providerCommands map[string]any
 		switch providerStyle {
-		case styles.StyleAnthropic:
-			providerCommands = map[string]any{
-				"list_models": &anthropic.ListModels{},
-				"inference":   &anthropic.Messages{},
-			}
-		case styles.StyleOpenAIResponses:
-			providerCommands = map[string]any{
-				"list_models": &openai.ListModels{},
-				"inference":   &openai.Responses{},
-			}
 		default: // OpenAI-compatible (chat completions)
 			providerCommands = map[string]any{
 				"list_models": &openai.ListModels{},
 				"inference":   &openai.ChatCompletions{},
 			}
 		}
-		p.impl.Commands = providerCommands
+		p.Impl.Commands = providerCommands
 
-		m.impl.Logger.Info("Provisioned provider",
+		m.Impl.Logger.Info("Provisioned provider",
 			zap.String("name", name),
 			zap.String("base_url", p.APIBaseURL),
 			zap.String("style", string(providerStyle)))
@@ -217,10 +209,10 @@ func (m *RouterModule) Provision(ctx caddy.Context) error {
 }
 
 func (m *RouterModule) Validate() error {
-	m.impl.Mu.RLock()
-	defer m.impl.Mu.RUnlock()
+	m.Impl.Mu.RLock()
+	defer m.Impl.Mu.RUnlock()
 
-	if len(m.Providers) == 0 {
+	if len(m.ProviderConfigs) == 0 {
 		return fmt.Errorf("at least one provider must be configured for ai_router")
 	}
 	return nil
@@ -232,8 +224,8 @@ func (m *RouterModule) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 
 // ResolveProvidersOrderAndModel determines provider order and normalizes the model name.
 func (m *RouterModule) ResolveProvidersOrderAndModel(model string) (providerNames []string, actualModelName string) {
-	m.impl.Mu.RLock()
-	defer m.impl.Mu.RUnlock()
+	m.Impl.Mu.RLock()
+	defer m.Impl.Mu.RUnlock()
 
 	// Strip plugin suffixes: model="gpt-4+plugin1:arg"
 	actualModelName = strings.SplitN(model, "+", 2)[0]
@@ -243,13 +235,13 @@ func (m *RouterModule) ResolveProvidersOrderAndModel(model string) (providerName
 	if len(parts) == 2 {
 		pName := strings.ToLower(parts[0])
 		actualModelName = parts[1]
-		if _, ok := m.Providers[pName]; ok {
-			m.impl.Logger.Debug("Found explicit provider by prefix",
+		if _, ok := m.ProviderConfigs[pName]; ok {
+			m.Impl.Logger.Debug("Found explicit provider by prefix",
 				zap.String("prefix", pName),
 				zap.String("model", actualModelName))
-			return append([]string{pName}, m.ProviderOrder...), actualModelName
+			return append([]string{pName}, m.ProvidersOrder...), actualModelName
 		}
-		m.impl.Logger.Debug("Prefix found but provider not recognized, checking defaults",
+		m.Impl.Logger.Debug("Prefix found but provider not recognized, checking defaults",
 			zap.String("prefix", pName),
 			zap.String("requested_model", actualModelName))
 	}
@@ -257,19 +249,19 @@ func (m *RouterModule) ResolveProvidersOrderAndModel(model string) (providerName
 	// Check for model-specific default provider
 	if pNames, ok := m.DefaultProviderForModel[actualModelName]; ok {
 		for _, pName := range pNames {
-			if _, providerExists := m.Providers[pName]; providerExists {
-				m.impl.Logger.Debug("Found default provider for model",
+			if _, providerExists := m.ProviderConfigs[pName]; providerExists {
+				m.Impl.Logger.Debug("Found default provider for model",
 					zap.String("model", actualModelName),
 					zap.String("provider", pName))
-				return append([]string{pName}, m.ProviderOrder...), actualModelName
+				return append([]string{pName}, m.ProvidersOrder...), actualModelName
 			}
-			m.impl.Logger.Warn("Default provider for model configured but provider itself not found",
+			m.Impl.Logger.Warn("Default provider for model configured but provider itself not found",
 				zap.String("model", actualModelName),
 				zap.String("configured_provider", pName))
 		}
 	}
 
-	return m.ProviderOrder, actualModelName
+	return m.ProvidersOrder, actualModelName
 }
 
 var (

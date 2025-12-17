@@ -1,10 +1,12 @@
 package plugins
 
 import (
+	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 
-	"github.com/neutrome-labs/open-ai-router/src/formats"
+	"github.com/neutrome-labs/open-ai-router/src/plugin"
 	"go.uber.org/zap"
 )
 
@@ -18,17 +20,27 @@ type Models struct{}
 
 func (m *Models) Name() string { return "models" }
 
+// knownModelField is used to extract/set model from json.RawMessage
+type knownModelField struct {
+	Model string `json:"model"`
+}
+
 // RecursiveHandler implements the fallback logic by trying models in sequence.
 // For each model, all providers are tried (via the handler). Only when all providers
 // fail for a model does it move to the next model in the fallback list.
 func (m *Models) RecursiveHandler(
 	params string,
-	invoker HandlerInvoker,
+	invoker plugin.HandlerInvoker,
+	reqBody []byte,
 	w http.ResponseWriter,
 	r *http.Request,
-	req formats.ManagedRequest,
 ) (handled bool, err error) {
-	model := req.GetModel()
+	// Extract model from request
+	var known knownModelField
+	if err := json.Unmarshal(reqBody, &known); err != nil {
+		return false, nil // Can't parse, let normal flow handle
+	}
+	model := known.Model
 
 	// Parse comma-separated models (strip plugin suffix first)
 	models, pluginSuffix := parseModelListForFallback(model)
@@ -52,12 +64,11 @@ func (m *Models) RecursiveHandler(
 		}
 
 		// Clone request and set current model (WITHOUT plugin suffix to avoid re-parsing)
-		clonedReq := req.Clone()
-		clonedReq.SetModel(currentModel)
+		clonedReq := cloneAndSetModel(reqBody, currentModel, r)
 
 		// Invoke the handler with the single model
 		// This will try ALL providers for this model
-		err := invoker.InvokeHandler(w, r, clonedReq)
+		err := invoker.InvokeHandler(w, clonedReq)
 		if err == nil {
 			// Success - one of the providers worked!
 			return true, nil
@@ -79,6 +90,26 @@ func (m *Models) RecursiveHandler(
 	}
 
 	return true, lastErr
+}
+
+// cloneAndSetModel creates a copy of the request with a new model
+func cloneAndSetModel(reqBody []byte, model string, r *http.Request) *http.Request {
+	var data map[string]json.RawMessage
+	if err := json.Unmarshal(reqBody, &data); err != nil {
+		return r // Return original on error
+	}
+
+	modelJSON, _ := json.Marshal(model)
+	data["model"] = modelJSON
+
+	result, err := json.Marshal(data)
+	if err != nil {
+		return r
+	}
+
+	clone := r.Clone(r.Context())
+	clone.Body = io.NopCloser(strings.NewReader(string(result)))
+	return clone
 }
 
 // parseModelListForFallback parses a comma-separated model string into a list.

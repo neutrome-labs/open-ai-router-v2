@@ -1,10 +1,10 @@
 package plugins
 
 import (
+	"encoding/json"
 	"net/http/httptest"
 	"testing"
 
-	"github.com/neutrome-labs/open-ai-router/src/formats"
 	"github.com/neutrome-labs/open-ai-router/src/services"
 )
 
@@ -18,9 +18,7 @@ func TestFuzz_Name(t *testing.T) {
 func TestFuzz_Before_NoProvider(t *testing.T) {
 	f := &Fuzz{}
 
-	req := &formats.OpenAIChatRequest{
-		Model: "gpt-4",
-	}
+	req := json.RawMessage(`{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}`)
 
 	httpReq := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 
@@ -30,20 +28,24 @@ func TestFuzz_Before_NoProvider(t *testing.T) {
 		t.Fatalf("Before failed: %v", err)
 	}
 
-	if result.GetModel() != "gpt-4" {
-		t.Errorf("Model changed: %s", result.GetModel())
+	var data struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(result, &data); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+	if data.Model != "gpt-4" {
+		t.Errorf("Model changed: %s", data.Model)
 	}
 }
 
 func TestFuzz_Before_NoCommands(t *testing.T) {
 	f := &Fuzz{}
 
-	req := &formats.OpenAIChatRequest{
-		Model: "gpt-4",
-	}
+	req := json.RawMessage(`{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}`)
 
 	httpReq := httptest.NewRequest("POST", "/v1/chat/completions", nil)
-	provider := &services.ProviderImpl{
+	provider := &services.ProviderService{
 		Name:     "test",
 		Commands: nil, // No commands
 	}
@@ -53,9 +55,15 @@ func TestFuzz_Before_NoCommands(t *testing.T) {
 		t.Fatalf("Before failed: %v", err)
 	}
 
+	var data struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(result, &data); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
 	// Should pass through unchanged
-	if result.GetModel() != "gpt-4" {
-		t.Errorf("Model changed: %s", result.GetModel())
+	if data.Model != "gpt-4" {
+		t.Errorf("Model changed: %s", data.Model)
 	}
 }
 

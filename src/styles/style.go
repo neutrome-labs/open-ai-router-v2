@@ -4,7 +4,9 @@
 package styles
 
 import (
-	"github.com/neutrome-labs/open-ai-router/src/formats"
+	"encoding/json"
+	"fmt"
+
 	"go.uber.org/zap"
 )
 
@@ -15,6 +17,7 @@ var Logger *zap.Logger
 type Style string
 
 const (
+	StyleUnknown         Style = ""
 	StyleOpenAIChat      Style = "openai-chat-completions"
 	StyleOpenAIResponses Style = "openai-responses"
 	StyleAnthropic       Style = "anthropic-messages"
@@ -24,68 +27,33 @@ const (
 )
 
 // ParseStyle parses a style string, defaulting to OpenAI chat completions
-func ParseStyle(s string) Style {
+func ParseStyle(s string) (Style, error) {
 	switch s {
 	case "openai-chat-completions", "openai", "":
-		return StyleOpenAIChat
-	case "openai-responses", "responses":
-		return StyleOpenAIResponses
+		return StyleOpenAIChat, nil
+	/*case "openai-responses", "responses":
+		return StyleOpenAIResponses, nil
 	case "anthropic-messages", "anthropic":
-		return StyleAnthropic
+		return StyleAnthropic, nil
 	case "google-genai", "google":
-		return StyleGoogleGenAI
+		return StyleGoogleGenAI, nil
 	case "cloudflare-ai-gateway":
-		return StyleCfAiGateway
+		return StyleCfAiGateway, nil
 	case "cloudflare-workers-ai", "cloudflare", "cf":
-		return StyleCfWorkersAi
+		return StyleCfWorkersAi, nil*/
 	default:
-		return StyleOpenAIChat
+		return StyleUnknown, fmt.Errorf("unknown style: %s", s)
 	}
 }
 
 // RequestConverter converts requests between styles
 type RequestConverter interface {
 	// Convert transforms a request from one style to another
-	Convert(req formats.ManagedRequest, from, to Style) (formats.ManagedRequest, error)
+	Convert(req json.RawMessage, from, to Style) (json.RawMessage, error)
 }
 
 // ResponseConverter converts responses between styles
 type ResponseConverter interface {
 	// Convert transforms a response from one style to another
-	Convert(resp formats.ManagedResponse, from, to Style) (formats.ManagedResponse, error)
-}
-
-// StyleContentType returns the Content-Type header for a given style
-func StyleContentType(style Style) string {
-	return "application/json"
-}
-
-// StyleAuthHeader returns the auth header name for a given style
-func StyleAuthHeader(style Style) string {
-	switch style {
-	case StyleAnthropic:
-		return "x-api-key"
-	default:
-		return "Authorization"
-	}
-}
-
-// StyleAuthFormat returns how to format the auth value for a given style
-func StyleAuthFormat(style Style, key string) string {
-	switch style {
-	case StyleAnthropic:
-		return key // Anthropic uses raw key
-	default:
-		return "Bearer " + key
-	}
-}
-
-// StyleRequiresVersion returns whether a style requires a version header
-func StyleRequiresVersion(style Style) (string, string, bool) {
-	switch style {
-	case StyleAnthropic:
-		return "anthropic-version", "2023-06-01", true
-	default:
-		return "", "", false
-	}
+	Convert(resp json.RawMessage, from, to Style) (json.RawMessage, error)
 }

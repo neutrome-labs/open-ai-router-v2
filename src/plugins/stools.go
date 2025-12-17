@@ -1,9 +1,9 @@
 package plugins
 
 import (
+	"encoding/json"
 	"net/http"
 
-	"github.com/neutrome-labs/open-ai-router/src/formats"
 	"github.com/neutrome-labs/open-ai-router/src/services"
 	"go.uber.org/zap"
 )
@@ -19,10 +19,20 @@ func (s *Stools) Name() string {
 	return "stools"
 }
 
+// message is a minimal struct for message inspection and modification
+type message struct {
+	Role       string          `json:"role"`
+	Content    json.RawMessage `json:"content"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
+	ToolCalls  json.RawMessage `json:"tool_calls,omitempty"`
+	Name       string          `json:"name,omitempty"`
+	Refusal    string          `json:"refusal,omitempty"`
+}
+
 // isToolMessage checks if a message is related to tool calling
-func isToolMessage(msg formats.Message) bool {
+func isToolMessageRaw(msg message) bool {
 	// Message with tool_calls (assistant calling tools)
-	if len(msg.ToolCalls) > 0 {
+	if len(msg.ToolCalls) > 0 && string(msg.ToolCalls) != "null" {
 		return true
 	}
 	// Message with tool role (tool response)
@@ -36,91 +46,81 @@ func isToolMessage(msg formats.Message) bool {
 	return false
 }
 
-// truncateContent truncates content to maxLen characters with ellipsis
-func truncateContent(content any, maxLen int) any {
-	switch c := content.(type) {
-	case string:
-		if len(c) <= maxLen {
-			return c
-		}
-		if maxLen <= 3 {
-			return c[:maxLen]
-		}
-		return c[:maxLen-3] + "..."
-	case []any:
-		// For content arrays (multimodal), truncate text parts
-		result := make([]any, len(c))
-		for i, part := range c {
-			if partMap, ok := part.(map[string]any); ok {
-				newPart := make(map[string]any)
-				for k, v := range partMap {
-					if k == "text" {
-						if text, ok := v.(string); ok {
-							if len(text) > maxLen {
-								if maxLen > 3 {
-									newPart[k] = text[:maxLen-3] + "..."
-								} else {
-									newPart[k] = text[:maxLen]
-								}
-							} else {
-								newPart[k] = text
-							}
-						} else {
-							newPart[k] = v
-						}
-					} else {
-						newPart[k] = v
-					}
-				}
-				result[i] = newPart
-			} else {
-				result[i] = part
-			}
-		}
-		return result
-	default:
+// truncateContentRaw truncates content in JSON format to maxLen characters with ellipsis
+func truncateContentRaw(content json.RawMessage, maxLen int) json.RawMessage {
+	if content == nil || len(content) == 0 {
 		return content
 	}
+
+	// Try to parse as string
+	var strContent string
+	if err := json.Unmarshal(content, &strContent); err == nil {
+		if len(strContent) <= maxLen {
+			return content
+		}
+		if maxLen <= 3 {
+			truncated, _ := json.Marshal(strContent[:maxLen])
+			return truncated
+		}
+		truncated, _ := json.Marshal(strContent[:maxLen-3] + "...")
+		return truncated
+	}
+
+	// Try to parse as array (multimodal content)
+	var arrContent []map[string]any
+	if err := json.Unmarshal(content, &arrContent); err == nil {
+		for i, part := range arrContent {
+			if text, ok := part["text"].(string); ok {
+				if len(text) > maxLen {
+					if maxLen > 3 {
+						part["text"] = text[:maxLen-3] + "..."
+					} else {
+						part["text"] = text[:maxLen]
+					}
+					arrContent[i] = part
+				}
+			}
+		}
+		truncated, _ := json.Marshal(arrContent)
+		return truncated
+	}
+
+	return content
 }
 
-// truncateToolCalls truncates tool call arguments to maxLen
-func truncateToolCalls(toolCalls []formats.ToolCall, maxLen int) []formats.ToolCall {
-	if len(toolCalls) == 0 {
+// truncateToolCallsRaw truncates tool call arguments in JSON format to maxLen
+func truncateToolCallsRaw(toolCalls json.RawMessage, maxLen int) json.RawMessage {
+	if toolCalls == nil || len(toolCalls) == 0 || string(toolCalls) == "null" {
 		return toolCalls
 	}
 
-	result := make([]formats.ToolCall, len(toolCalls))
-	for i, tc := range toolCalls {
-		result[i] = formats.ToolCall{
-			Index: tc.Index,
-			ID:    tc.ID,
-			Type:  tc.Type,
-		}
-		if tc.Function != nil {
-			args := tc.Function.Arguments
-			if len(args) > maxLen {
+	var tcs []map[string]any
+	if err := json.Unmarshal(toolCalls, &tcs); err != nil {
+		return toolCalls
+	}
+
+	for i, tc := range tcs {
+		if fn, ok := tc["function"].(map[string]any); ok {
+			if args, ok := fn["arguments"].(string); ok && len(args) > maxLen {
 				if maxLen > 3 {
-					args = args[:maxLen-3] + "..."
+					fn["arguments"] = args[:maxLen-3] + "..."
 				} else {
-					args = args[:maxLen]
+					fn["arguments"] = args[:maxLen]
 				}
-			}
-			result[i].Function = &struct {
-				Name      string `json:"name,omitempty"`
-				Arguments string `json:"arguments,omitempty"`
-			}{
-				Name:      tc.Function.Name,
-				Arguments: args,
+				tc["function"] = fn
+				tcs[i] = tc
 			}
 		}
 	}
+
+	result, _ := json.Marshal(tcs)
 	return result
 }
 
-// findLastToolInteractionBoundary finds the start index of the last tool interaction that should be preserved.
+// findLastToolInteractionBoundaryRaw finds the start index of the last tool interaction that should be preserved.
 // Returns -1 if no tool messages found, or if all tool interactions are completed (followed by non-tool messages).
 // A tool interaction is "active" if it's at the very end of the conversation without subsequent non-tool messages.
-func findLastToolInteractionBoundary(messages []formats.Message) int {
+func findLastToolInteractionBoundaryRaw(messages []message) int {
 	if len(messages) == 0 {
 		return -1
 	}
@@ -128,14 +128,14 @@ func findLastToolInteractionBoundary(messages []formats.Message) int {
 	// Check if the last message is a tool message
 	// If not, all tool interactions are "completed" and should be truncated
 	lastMsg := messages[len(messages)-1]
-	if !isToolMessage(lastMsg) {
+	if !isToolMessageRaw(lastMsg) {
 		return -1 // All tool interactions are completed, truncate everything
 	}
 
 	// Find the start of the active tool interaction at the end
 	// Walk backwards from the end to find where this tool interaction starts
 	for i := len(messages) - 1; i >= 0; i-- {
-		if !isToolMessage(messages[i]) {
+		if !isToolMessageRaw(messages[i]) {
 			return i + 1 // The tool interaction starts right after this non-tool message
 		}
 	}
@@ -144,32 +144,39 @@ func findLastToolInteractionBoundary(messages []formats.Message) int {
 	return 0
 }
 
-func (s *Stools) Before(params string, p *services.ProviderImpl, r *http.Request, req formats.ManagedRequest) (formats.ManagedRequest, error) {
+func (s *Stools) Before(params string, p *services.ProviderService, r *http.Request, req json.RawMessage) (json.RawMessage, error) {
 	if Logger != nil {
 		Logger.Debug("stools plugin before hook")
 	}
 
 	const truncateLen = 100
 
-	messages := req.GetMessages()
-	if len(messages) == 0 {
+	// Parse request to extract messages
+	var reqData struct {
+		Messages []message `json:"messages"`
+	}
+	if err := json.Unmarshal(req, &reqData); err != nil {
+		return req, nil
+	}
+
+	if len(reqData.Messages) == 0 {
 		return req, nil
 	}
 
 	// Find the boundary: messages at or after this index are preserved (not truncated)
 	// If -1, all tool interactions should be truncated (they're all "completed")
-	preserveFromIdx := findLastToolInteractionBoundary(messages)
+	preserveFromIdx := findLastToolInteractionBoundaryRaw(reqData.Messages)
 
 	if Logger != nil {
 		Logger.Debug("stools analysis",
-			zap.Int("totalMessages", len(messages)),
+			zap.Int("totalMessages", len(reqData.Messages)),
 			zap.Int("preserveFromIdx", preserveFromIdx))
 	}
 
 	// Check if there are any tool messages to process
 	hasToolMessages := false
-	for _, msg := range messages {
-		if isToolMessage(msg) {
+	for _, msg := range reqData.Messages {
+		if isToolMessageRaw(msg) {
 			hasToolMessages = true
 			break
 		}
@@ -179,42 +186,47 @@ func (s *Stools) Before(params string, p *services.ProviderImpl, r *http.Request
 	}
 
 	// Process messages: truncate tool content in earlier messages
-	newMessages := make([]formats.Message, len(messages))
-	for i, msg := range messages {
-		newMsg := formats.Message{
-			Role:       msg.Role,
-			Name:       msg.Name,
-			Content:    msg.Content,
-			ToolCallID: msg.ToolCallID,
-			Refusal:    msg.Refusal,
-			ToolCalls:  msg.ToolCalls,
-		}
+	for i := range reqData.Messages {
+		msg := &reqData.Messages[i]
 
 		// Truncate if:
 		// - preserveFromIdx is -1 (all tool interactions completed), OR
 		// - this message is before the preserved boundary
 		shouldTruncate := preserveFromIdx == -1 || i < preserveFromIdx
 
-		if shouldTruncate && isToolMessage(msg) {
+		if shouldTruncate && isToolMessageRaw(*msg) {
 			// Truncate content for tool response messages
 			if msg.Role == "tool" || msg.ToolCallID != "" {
-				newMsg.Content = truncateContent(msg.Content, truncateLen)
+				msg.Content = truncateContentRaw(msg.Content, truncateLen)
 			}
 			// Truncate tool call arguments
-			if len(msg.ToolCalls) > 0 {
-				newMsg.ToolCalls = truncateToolCalls(msg.ToolCalls, truncateLen)
+			if len(msg.ToolCalls) > 0 && string(msg.ToolCalls) != "null" {
+				msg.ToolCalls = truncateToolCallsRaw(msg.ToolCalls, truncateLen)
 			}
 		}
-
-		newMessages[i] = newMsg
 	}
 
-	req.SetMessages(newMessages)
+	// Rebuild request with modified messages
+	var fullReq map[string]json.RawMessage
+	if err := json.Unmarshal(req, &fullReq); err != nil {
+		return req, nil
+	}
+
+	messagesJSON, err := json.Marshal(reqData.Messages)
+	if err != nil {
+		return req, nil
+	}
+	fullReq["messages"] = messagesJSON
+
+	result, err := json.Marshal(fullReq)
+	if err != nil {
+		return req, nil
+	}
 
 	if Logger != nil {
 		Logger.Debug("stools processed messages",
 			zap.Int("preserveFromIdx", preserveFromIdx))
 	}
 
-	return req, nil
+	return result, nil
 }

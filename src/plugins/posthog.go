@@ -2,12 +2,13 @@ package plugins
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/neutrome-labs/open-ai-router/src/formats"
+	"github.com/neutrome-labs/open-ai-router/src/plugin"
 	"github.com/neutrome-labs/open-ai-router/src/services"
 )
 
@@ -32,17 +33,41 @@ func newStreamAccumulator() *streamAccumulator {
 	}
 }
 
-// accumulate merges a streaming chunk into the accumulator
-func (sa *streamAccumulator) accumulate(chunk formats.ManagedResponse) {
+// accumulate merges a streaming chunk into the accumulator (works with raw JSON)
+func (sa *streamAccumulator) accumulate(chunk json.RawMessage) {
 	sa.mu.Lock()
 	defer sa.mu.Unlock()
 
-	if model := chunk.GetModel(); model != "" {
-		sa.model = model
+	var data struct {
+		Model   string `json:"model"`
+		Choices []struct {
+			Index        int    `json:"index"`
+			FinishReason string `json:"finish_reason"`
+			Delta        *struct {
+				Role      string `json:"role"`
+				Content   string `json:"content"`
+				ToolCalls []struct {
+					Index    int    `json:"index"`
+					ID       string `json:"id"`
+					Type     string `json:"type"`
+					Function *struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
+			} `json:"delta"`
+		} `json:"choices"`
 	}
 
-	choices := chunk.GetChoices()
-	for _, choice := range choices {
+	if err := json.Unmarshal(chunk, &data); err != nil {
+		return
+	}
+
+	if data.Model != "" {
+		sa.model = data.Model
+	}
+
+	for _, choice := range data.Choices {
 		idx := choice.Index
 
 		accum, exists := sa.choices[idx]
@@ -59,39 +84,36 @@ func (sa *streamAccumulator) accumulate(chunk formats.ManagedResponse) {
 			if choice.Delta.Role != "" {
 				accum.role = choice.Delta.Role
 			}
-			if content, ok := choice.Delta.Content.(string); ok {
-				accum.content.WriteString(content)
-			}
+			accum.content.WriteString(choice.Delta.Content)
+
 			// accumulate tool calls
-			if len(choice.Delta.ToolCalls) > 0 {
-				for _, tc := range choice.Delta.ToolCalls {
-					tcIdx := tc.Index
+			for _, tc := range choice.Delta.ToolCalls {
+				tcIdx := tc.Index
 
-					// extend slice if needed
-					for len(accum.toolCalls) <= tcIdx {
-						accum.toolCalls = append(accum.toolCalls, map[string]any{})
-					}
+				// extend slice if needed
+				for len(accum.toolCalls) <= tcIdx {
+					accum.toolCalls = append(accum.toolCalls, map[string]any{})
+				}
 
-					existing := accum.toolCalls[tcIdx]
-					if tc.ID != "" {
-						existing["id"] = tc.ID
+				existing := accum.toolCalls[tcIdx]
+				if tc.ID != "" {
+					existing["id"] = tc.ID
+				}
+				if tc.Type != "" {
+					existing["type"] = tc.Type
+				}
+				if tc.Function != nil {
+					existingFn, _ := existing["function"].(map[string]any)
+					if existingFn == nil {
+						existingFn = map[string]any{}
+						existing["function"] = existingFn
 					}
-					if tc.Type != "" {
-						existing["type"] = tc.Type
+					if tc.Function.Name != "" {
+						existingFn["name"] = tc.Function.Name
 					}
-					if tc.Function != nil {
-						existingFn, _ := existing["function"].(map[string]any)
-						if existingFn == nil {
-							existingFn = map[string]any{}
-							existing["function"] = existingFn
-						}
-						if tc.Function.Name != "" {
-							existingFn["name"] = tc.Function.Name
-						}
-						if tc.Function.Arguments != "" {
-							prevArgs, _ := existingFn["arguments"].(string)
-							existingFn["arguments"] = prevArgs + tc.Function.Arguments
-						}
+					if tc.Function.Arguments != "" {
+						prevArgs, _ := existingFn["arguments"].(string)
+						existingFn["arguments"] = prevArgs + tc.Function.Arguments
 					}
 				}
 			}
@@ -133,7 +155,7 @@ type Posthog struct{}
 
 func (p *Posthog) Name() string { return "posthog" }
 
-func (p *Posthog) Before(params string, provider *services.ProviderImpl, r *http.Request, req formats.ManagedRequest) (formats.ManagedRequest, error) {
+func (p *Posthog) Before(params string, provider *services.ProviderService, r *http.Request, req json.RawMessage) (json.RawMessage, error) {
 	ctx := r.Context()
 	ctx = context.WithValue(ctx, posthogTimeStartKey, time.Now())
 	ctx = context.WithValue(ctx, posthogStreamAccumKey, newStreamAccumulator())
@@ -141,12 +163,12 @@ func (p *Posthog) Before(params string, provider *services.ProviderImpl, r *http
 	return req, nil
 }
 
-func (p *Posthog) After(params string, provider *services.ProviderImpl, r *http.Request, req formats.ManagedRequest, hres *http.Response, res formats.ManagedResponse) (formats.ManagedResponse, error) {
+func (p *Posthog) After(params string, provider *services.ProviderService, r *http.Request, req json.RawMessage, hres *http.Response, res json.RawMessage) (json.RawMessage, error) {
 	p.fireEvent(provider, r, req, hres, res, false, nil)
 	return res, nil
 }
 
-func (p *Posthog) AfterChunk(params string, provider *services.ProviderImpl, r *http.Request, req formats.ManagedRequest, hres *http.Response, chunk formats.ManagedResponse) (formats.ManagedResponse, error) {
+func (p *Posthog) AfterChunk(params string, provider *services.ProviderService, r *http.Request, req json.RawMessage, hres *http.Response, chunk json.RawMessage) (json.RawMessage, error) {
 	// Accumulate chunk content for final event
 	ctx := r.Context()
 	if accumVal := ctx.Value(posthogStreamAccumKey); accumVal != nil {
@@ -158,21 +180,33 @@ func (p *Posthog) AfterChunk(params string, provider *services.ProviderImpl, r *
 	return chunk, nil
 }
 
-func (p *Posthog) StreamEnd(params string, provider *services.ProviderImpl, r *http.Request, req formats.ManagedRequest, hres *http.Response, lastChunk formats.ManagedResponse) error {
+func (p *Posthog) StreamEnd(params string, provider *services.ProviderService, r *http.Request, req json.RawMessage, hres *http.Response, lastChunk json.RawMessage) error {
 	p.fireEvent(provider, r, req, hres, lastChunk, true, nil)
 	return nil
 }
 
-func (p *Posthog) OnError(params string, provider *services.ProviderImpl, r *http.Request, req formats.ManagedRequest, hres *http.Response, providerErr error) error {
-	p.fireEvent(provider, r, req, hres, nil, req.IsStreaming(), providerErr)
+func (p *Posthog) OnError(params string, provider *services.ProviderService, r *http.Request, req json.RawMessage, hres *http.Response, providerErr error) error {
+	isStreaming := getStreamFromRaw(req)
+	p.fireEvent(provider, r, req, hres, nil, isStreaming, providerErr)
 	return nil
 }
 
-func (p *Posthog) fireEvent(provider *services.ProviderImpl, r *http.Request, req formats.ManagedRequest, hres *http.Response, res formats.ManagedResponse, isStreaming bool, providerErr error) {
+// getStreamFromRaw extracts the stream field from raw JSON request
+func getStreamFromRaw(req json.RawMessage) bool {
+	var data struct {
+		Stream bool `json:"stream"`
+	}
+	if err := json.Unmarshal(req, &data); err != nil {
+		return false
+	}
+	return data.Stream
+}
+
+func (p *Posthog) fireEvent(provider *services.ProviderService, r *http.Request, req json.RawMessage, hres *http.Response, res json.RawMessage, isStreaming bool, providerErr error) {
 	ctx := r.Context()
-	traceId, _ := ctx.Value(traceIDKey).(string)
+	traceId, _ := ctx.Value(plugin.ContextTraceID()).(string)
 	startTime, _ := ctx.Value(posthogTimeStartKey).(time.Time)
-	userId, _ := ctx.Value(userIDKey).(string)
+	userId, _ := ctx.Value(plugin.ContextUserID()).(string)
 
 	// Get stream accumulator
 	var accum *streamAccumulator
@@ -219,15 +253,26 @@ func (p *Posthog) fireEvent(provider *services.ProviderImpl, r *http.Request, re
 		providerBaseURL = provider.ParsedURL.String()
 	}
 
+	// Extract request fields
+	var reqData struct {
+		Model       string          `json:"model"`
+		Stream      bool            `json:"stream"`
+		Temperature *float64        `json:"temperature"`
+		MaxTokens   int             `json:"max_tokens"`
+		Messages    json.RawMessage `json:"messages"`
+		Tools       json.RawMessage `json:"tools"`
+	}
+	_ = json.Unmarshal(req, &reqData)
+
 	props := map[string]any{
 		"$ai_trace_id":    traceId,
-		"$ai_model":       req.GetModel(),
+		"$ai_model":       reqData.Model,
 		"$ai_provider":    providerName,
 		"$ai_latency":     latency,
 		"$ai_base_url":    providerBaseURL,
 		"$ai_request_url": r.URL.String(),
 		"$ai_is_error":    isError,
-		"$ai_stream":      req.IsStreaming(),
+		"$ai_stream":      reqData.Stream,
 		"$ai_http_status": httpStatus,
 	}
 
@@ -235,27 +280,43 @@ func (p *Posthog) fireEvent(provider *services.ProviderImpl, r *http.Request, re
 		props["$ai_error_message"] = errorMessage
 	}
 
+	// Extract usage from response
 	if res != nil {
-		if usage := res.GetUsage(); usage != nil {
-			props["$ai_input_tokens"] = usage.PromptTokens
-			props["$ai_output_tokens"] = usage.CompletionTokens
+		var resData struct {
+			Usage *struct {
+				PromptTokens     int `json:"prompt_tokens"`
+				CompletionTokens int `json:"completion_tokens"`
+			} `json:"usage"`
+			Choices json.RawMessage `json:"choices"`
+		}
+		if err := json.Unmarshal(res, &resData); err == nil {
+			if resData.Usage != nil {
+				props["$ai_input_tokens"] = resData.Usage.PromptTokens
+				props["$ai_output_tokens"] = resData.Usage.CompletionTokens
+			}
 		}
 	}
 
-	// Handle OpenAI-specific fields
-	if openaiReq, ok := req.(*formats.OpenAIChatRequest); ok {
-		if openaiReq.Temperature != nil {
-			props["$ai_temperature"] = *openaiReq.Temperature
-		}
-		if openaiReq.MaxTokens > 0 {
-			props["$ai_max_tokens"] = openaiReq.MaxTokens
-		}
+	// Extract optional fields
+	if reqData.Temperature != nil {
+		props["$ai_temperature"] = *reqData.Temperature
+	}
+	if reqData.MaxTokens > 0 {
+		props["$ai_max_tokens"] = reqData.MaxTokens
+	}
 
-		// Include content if enabled
-		if services.PosthogIncludeContent {
-			props["$ai_input"] = openaiReq.Messages
-			if len(openaiReq.Tools) > 0 {
-				props["$ai_tools"] = openaiReq.Tools
+	// Include content if enabled
+	if services.PosthogIncludeContent {
+		if reqData.Messages != nil {
+			var messages []any
+			if err := json.Unmarshal(reqData.Messages, &messages); err == nil {
+				props["$ai_input"] = messages
+			}
+		}
+		if reqData.Tools != nil {
+			var tools []any
+			if err := json.Unmarshal(reqData.Tools, &tools); err == nil && len(tools) > 0 {
+				props["$ai_tools"] = tools
 			}
 		}
 	}
@@ -265,7 +326,12 @@ func (p *Posthog) fireEvent(provider *services.ProviderImpl, r *http.Request, re
 		if isStreaming && accum != nil {
 			props["$ai_output_choices"] = accum.buildChoices()
 		} else if res != nil {
-			props["$ai_output_choices"] = res.GetChoices()
+			var resData struct {
+				Choices []any `json:"choices"`
+			}
+			if err := json.Unmarshal(res, &resData); err == nil {
+				props["$ai_output_choices"] = resData.Choices
+			}
 		}
 	}
 
@@ -278,16 +344,4 @@ type contextKey string
 const (
 	posthogTimeStartKey   contextKey = "posthog_time_start"
 	posthogStreamAccumKey contextKey = "posthog_stream_accum"
-	traceIDKey            contextKey = "trace_id"
-	userIDKey             contextKey = "user_id"
-	keyIDKey              contextKey = "key_id"
 )
-
-// ContextTraceID returns the trace ID context key
-func ContextTraceID() contextKey { return traceIDKey }
-
-// ContextUserID returns the user ID context key
-func ContextUserID() contextKey { return userIDKey }
-
-// ContextKeyID returns the key ID context key
-func ContextKeyID() contextKey { return keyIDKey }

@@ -1,4 +1,4 @@
-package modules
+package server
 
 import (
 	"encoding/json"
@@ -9,6 +9,7 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/neutrome-labs/open-ai-router/src/drivers"
+	"github.com/neutrome-labs/open-ai-router/src/modules"
 	"go.uber.org/zap"
 )
 
@@ -49,7 +50,7 @@ func (m *ListModelsModule) Provision(ctx caddy.Context) error {
 }
 
 func (m *ListModelsModule) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
-	router, ok := GetRouter(m.RouterName)
+	router, ok := modules.GetRouter(m.RouterName)
 	if !ok {
 		m.logger.Error("Router not found", zap.String("name", m.RouterName))
 		http.Error(w, "Router not found", http.StatusInternalServerError)
@@ -57,19 +58,19 @@ func (m *ListModelsModule) ServeHTTP(w http.ResponseWriter, r *http.Request, nex
 	}
 
 	models := make([]drivers.ListModelsModel, 0)
-	for _, name := range router.ProviderOrder {
-		p := router.Providers[name]
+	for _, name := range router.ProvidersOrder {
+		p := router.ProviderConfigs[name]
 		if p == nil {
 			m.logger.Warn("Provider config is nil", zap.String("name", name))
 			continue
 		}
 
-		if len(p.impl.Commands) == 0 {
+		if len(p.Impl.Commands) == 0 {
 			m.logger.Warn("Provider commands is nil or empty", zap.String("name", name))
 			continue
 		}
 
-		listCmd, ok := p.impl.Commands["list_models"]
+		listCmd, ok := p.Impl.Commands["list_models"]
 		if !ok {
 			continue
 		}
@@ -79,7 +80,7 @@ func (m *ListModelsModule) ServeHTTP(w http.ResponseWriter, r *http.Request, nex
 			continue
 		}
 
-		xmodels, err := cmd.DoListModels(&p.impl, r)
+		xmodels, err := cmd.DoListModels(&p.Impl, r)
 		if err != nil {
 			m.logger.Error("Error listing models", zap.String("provider", name), zap.Error(err))
 			continue
@@ -90,7 +91,7 @@ func (m *ListModelsModule) ServeHTTP(w http.ResponseWriter, r *http.Request, nex
 				Object:  "model",
 				ID:      strings.ToLower(p.Name) + "/" + xm.ID,
 				Name:    xm.Name,
-				OwnedBy: p.Name,
+				OwnedBy: xm.OwnedBy,
 			})
 		}
 	}

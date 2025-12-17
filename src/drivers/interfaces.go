@@ -4,7 +4,6 @@ package drivers
 import (
 	"net/http"
 
-	"github.com/neutrome-labs/open-ai-router/src/formats"
 	"github.com/neutrome-labs/open-ai-router/src/services"
 )
 
@@ -19,13 +18,13 @@ type ListModelsModel struct {
 
 // ListModelsCommand lists available models from a provider
 type ListModelsCommand interface {
-	DoListModels(p *services.ProviderImpl, r *http.Request) ([]ListModelsModel, error)
+	DoListModels(p *services.ProviderService, r *http.Request) ([]ListModelsModel, error)
 }
 
 // InferenceStreamChunk represents a streaming response chunk
 type InferenceStreamChunk struct {
 	RuntimeError error
-	Data         formats.ManagedResponse
+	Data         []byte
 }
 
 // InferenceCommand is the unified interface for all inference APIs.
@@ -34,7 +33,7 @@ type InferenceStreamChunk struct {
 // The module handles format conversion at the boundary.
 type InferenceCommand interface {
 	// DoInference sends a non-streaming inference request
-	DoInference(p *services.ProviderImpl, req formats.ManagedRequest, r *http.Request) (*http.Response, formats.ManagedResponse, error)
+	DoInference(p *services.ProviderService, reqBody []byte, r *http.Request) (*http.Response, []byte, error)
 	// DoInferenceStream sends a streaming inference request
-	DoInferenceStream(p *services.ProviderImpl, req formats.ManagedRequest, r *http.Request) (*http.Response, chan InferenceStreamChunk, error)
+	DoInferenceStream(p *services.ProviderService, reqBody []byte, r *http.Request) (*http.Response, chan InferenceStreamChunk, error)
 }

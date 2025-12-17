@@ -13,7 +13,7 @@ import (
 // ListModels implements listing models for OpenAI-compatible APIs
 type ListModels struct{}
 
-func (c *ListModels) DoListModels(p *services.ProviderImpl, r *http.Request) ([]drivers.ListModelsModel, error) {
+func (c *ListModels) DoListModels(p *services.ProviderService, r *http.Request) ([]drivers.ListModelsModel, error) {
 	targetUrl := p.ParsedURL
 	targetUrl.Path += "/models"
 
@@ -27,7 +27,7 @@ func (c *ListModels) DoListModels(p *services.ProviderImpl, r *http.Request) ([]
 	}
 	req = req.WithContext(r.Context())
 
-	authVal, err := p.Router.AuthManager.CollectTargetAuth("list_models", p, r, req)
+	authVal, err := p.Router.Auth.CollectTargetAuth("list_models", p, r, req)
 	if err != nil {
 		return nil, err
 	}

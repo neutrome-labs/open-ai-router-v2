@@ -1,11 +1,13 @@
 package plugins
 
 import (
+	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
 
-	"github.com/neutrome-labs/open-ai-router/src/formats"
+	"github.com/neutrome-labs/open-ai-router/src/plugin"
 	"go.uber.org/zap"
 )
 
@@ -24,12 +26,19 @@ func (p *Parallel) Name() string { return "parallel" }
 // in parallel and merging the responses.
 func (p *Parallel) RecursiveHandler(
 	params string,
-	invoker HandlerInvoker,
+	invoker plugin.HandlerInvoker,
+	reqBody []byte,
 	w http.ResponseWriter,
 	r *http.Request,
-	req formats.ManagedRequest,
 ) (handled bool, err error) {
-	model := req.GetModel()
+	// Extract model from request
+	var known struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(reqBody, &known); err != nil {
+		return false, nil
+	}
+	model := known.Model
 
 	// Parse pipe-separated models for parallel execution
 	models, pluginSuffix := parseParallelModelList(model)
@@ -48,7 +57,7 @@ func (p *Parallel) RecursiveHandler(
 	type result struct {
 		index int
 		model string
-		resp  formats.ManagedResponse
+		resp  json.RawMessage
 		err   error
 	}
 
@@ -60,14 +69,9 @@ func (p *Parallel) RecursiveHandler(
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			cloned := req.Clone()
-			// Force non-streaming for parallel
-			if chatReq, ok := cloned.(*formats.OpenAIChatRequest); ok {
-				chatReq.Stream = false
-				chatReq.StreamOptions = nil
-			}
-			cloned.SetModel(m)
-			resp, err := invoker.InvokeHandlerCapture(r, cloned)
+			// Clone request, set model and disable streaming
+			cloned := cloneSetModelAndDisableStream(reqBody, m, r)
+			resp, err := invoker.InvokeHandlerCapture(cloned)
 			results <- result{index: i, model: m, resp: resp, err: err}
 		}()
 	}
@@ -77,7 +81,7 @@ func (p *Parallel) RecursiveHandler(
 	close(results)
 
 	// Collect results in order
-	responses := make([]formats.ManagedResponse, len(models))
+	responses := make([]json.RawMessage, len(models))
 	var errors []error
 
 	for res := range results {
@@ -94,7 +98,7 @@ func (p *Parallel) RecursiveHandler(
 	}
 
 	// Find first successful response to use as base
-	var firstResponse formats.ManagedResponse
+	var firstResponse json.RawMessage
 	var successCount int
 	for _, resp := range responses {
 		if resp != nil {
@@ -122,27 +126,42 @@ func (p *Parallel) RecursiveHandler(
 
 	if Logger != nil {
 		Logger.Debug("parallel plugin merged responses",
-			zap.Int("total_responses", successCount),
-			zap.Int("total_choices", len(merged.GetChoices())))
-	}
-
-	// Write merged response
-	data, err := merged.ToJSON()
-	if err != nil {
-		return true, err
+			zap.Int("total_responses", successCount))
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Parallel-Models", strings.Join(models, "|"))
-	_, err = w.Write(data)
+	_, err = w.Write(merged)
 	return true, err
+}
+
+// cloneSetModelAndDisableStream creates a copy of the request with a new model and stream=false
+func cloneSetModelAndDisableStream(reqBody []byte, model string, r *http.Request) *http.Request {
+	var data map[string]json.RawMessage
+	if err := json.Unmarshal(reqBody, &data); err != nil {
+		return r
+	}
+
+	modelJSON, _ := json.Marshal(model)
+	data["model"] = modelJSON
+	data["stream"] = json.RawMessage("false")
+	delete(data, "stream_options")
+
+	result, err := json.Marshal(data)
+	if err != nil {
+		return r
+	}
+
+	clone := r.Clone(r.Context())
+	clone.Body = io.NopCloser(strings.NewReader(string(result)))
+	return clone
 }
 
 // mergeParallelResponses combines multiple responses into one by merging choices.
 // The first response is used as the base, and choices from other responses are appended
 // with re-indexed choice indices.
-func mergeParallelResponses(primary formats.ManagedResponse, all []formats.ManagedResponse, models []string) formats.ManagedResponse {
-	if primary == nil && len(all) > 0 {
+func mergeParallelResponses(primary json.RawMessage, all []json.RawMessage, models []string) json.RawMessage {
+	if primary == nil {
 		for _, r := range all {
 			if r != nil {
 				primary = r
@@ -154,60 +173,61 @@ func mergeParallelResponses(primary formats.ManagedResponse, all []formats.Manag
 		return nil
 	}
 
-	// Type assert to OpenAIChatResponse for merging
-	chatResp, ok := primary.(*formats.OpenAIChatResponse)
-	if !ok {
+	// Parse the primary response
+	var baseResp map[string]json.RawMessage
+	if err := json.Unmarshal(primary, &baseResp); err != nil {
 		return primary
 	}
 
 	// Collect all choices with re-indexed indices
-	var allChoices []formats.Choice
+	var allChoices []json.RawMessage
 	idx := 0
 
 	for _, resp := range all {
 		if resp == nil {
 			continue
 		}
-		for _, choice := range resp.GetChoices() {
-			newChoice := choice
-			newChoice.Index = idx
-			allChoices = append(allChoices, newChoice)
+
+		var respData struct {
+			Choices []json.RawMessage `json:"choices"`
+		}
+		if err := json.Unmarshal(resp, &respData); err != nil {
+			continue
+		}
+
+		for _, choice := range respData.Choices {
+			// Update the index in the choice
+			var choiceMap map[string]json.RawMessage
+			if err := json.Unmarshal(choice, &choiceMap); err != nil {
+				continue
+			}
+			indexJSON, _ := json.Marshal(idx)
+			choiceMap["index"] = indexJSON
+
+			updatedChoice, err := json.Marshal(choiceMap)
+			if err != nil {
+				continue
+			}
+			allChoices = append(allChoices, updatedChoice)
 			idx++
 		}
 	}
 
-	// Create merged response
-	merged := &formats.OpenAIChatResponse{
-		ID:                chatResp.ID,
-		Object:            chatResp.Object,
-		Created:           chatResp.Created,
-		Model:             strings.Join(models, "|"),
-		SystemFingerprint: chatResp.SystemFingerprint,
-		Choices:           allChoices,
-		ServiceTier:       chatResp.ServiceTier,
-	}
+	// Update the model to show all merged models
+	modelJSON, _ := json.Marshal(strings.Join(models, "|"))
+	baseResp["model"] = modelJSON
 
-	// Merge usage if available
-	var totalUsage *formats.Usage
-	for _, resp := range all {
-		if resp == nil {
-			continue
-		}
-		usage := resp.GetUsage()
-		if usage != nil {
-			if totalUsage == nil {
-				totalUsage = &formats.Usage{}
-			}
-			totalUsage.PromptTokens += usage.PromptTokens
-			totalUsage.CompletionTokens += usage.CompletionTokens
-			totalUsage.TotalTokens += usage.TotalTokens
-			totalUsage.CacheReadInputTokens += usage.CacheReadInputTokens
-			totalUsage.CacheCreationInputTokens += usage.CacheCreationInputTokens
-		}
-	}
-	merged.Usage = totalUsage
+	// Update choices
+	choicesJSON, _ := json.Marshal(allChoices)
+	baseResp["choices"] = choicesJSON
 
-	return merged
+	// TODO: Merge usage from all responses
+
+	result, err := json.Marshal(baseResp)
+	if err != nil {
+		return primary
+	}
+	return result
 }
 
 // parseParallelModelList parses a pipe-separated model string into a list.
