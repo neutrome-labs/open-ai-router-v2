@@ -14,28 +14,28 @@
 
 # Features Map
 
-Style                   | Server | Client
-------------------------|--------|--------
-OpenAI Chat Completions | Full   | Full 
-OpenAI Responses        | None   | None
-Anthropic Messages      | None   | None
-Google GenAI            | None   | None
-Google Responses        | None   | None
-Cloudflare Workers AI   | None   | None
-Cloudflare AI Gateway   | None   | None
+Style                   | Server  | Client
+------------------------|---------|--------
+OpenAI Chat Completions | Full    | Full 
+OpenAI Responses        | Planned | Beta
+Anthropic Messages      | Planned | None
+Google GenAI            | Planned | None
+Google Responses        | Planned | None
+Cloudflare Workers AI   | Planned | None
+Cloudflare AI Gateway   | Planned | None
 
 # Plugins
 
-## posthog
+### posthog
 
-## models
+### models
 
-## parallel
+### parallel
 
 ### select
 
-## fuzz
+### fuzz
 
-## zip
+### zip
 
-## stools
+### stools

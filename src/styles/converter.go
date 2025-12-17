@@ -1,7 +1,6 @@
 package styles
 
 import (
-	"encoding/json"
 	"fmt"
 )
 
@@ -11,21 +10,42 @@ import (
 type DefaultConverter struct{}
 
 // ConvertRequest converts a request from one style to another.
-// Currently only supports passthrough when styles match.
 func (c *DefaultConverter) ConvertRequest(reqBody []byte, from, to Style) ([]byte, error) {
 	if from == to {
 		return reqBody, nil // Passthrough
+	}
+
+	if from == StyleOpenAIChat && to == StyleOpenAIResponses {
+		return ConvertChatCompletionsRequestToResponses(reqBody)
 	}
 
 	return nil, fmt.Errorf("conversion from %s to %s not yet implemented", from, to)
 }
 
 // ConvertResponse converts a response from one style to another.
-// Currently only supports passthrough when styles match.
-func (c *DefaultConverter) ConvertResponse(resBody []byte, from, to Style) (json.RawMessage, error) {
+func (c *DefaultConverter) ConvertResponse(resBody []byte, from, to Style) ([]byte, error) {
 	if from == to {
 		return resBody, nil // Passthrough
 	}
 
-	return nil, fmt.Errorf("conversion from %s to %s not yet implemented", from, to)
+	if from == StyleOpenAIResponses && to == StyleOpenAIChat {
+		converted, err := ConvertResponsesResponseToChatCompletions(resBody)
+		return converted, err
+	}
+
+	return nil, fmt.Errorf("conversion from %s to %s not yet implemented", to, from)
+}
+
+// ConvertResponseChunk converts a response chunk from one style to another.
+func (c *DefaultConverter) ConvertResponseChunk(chunkBody []byte, from, to Style) ([]byte, error) {
+	if from == to {
+		return chunkBody, nil // Passthrough
+	}
+
+	if from == StyleOpenAIResponses && to == StyleOpenAIChat {
+		converted, err := ConvertResponsesResponseChunkToChatCompletions(chunkBody)
+		return converted, err
+	}
+
+	return nil, fmt.Errorf("conversion from %s to %s not yet implemented", to, from)
 }

@@ -214,7 +214,7 @@ func (m *OpenAIChatCompletionsModule) serveChatCompletionsStream(
 
 		// Convert chunk (passthrough if same style)
 		if chunkData != nil {
-			converted, err := converter.ConvertResponse(chunkData, outputStyle, inputStyle)
+			converted, err := converter.ConvertResponseChunk(chunkData, outputStyle, inputStyle)
 			if err == nil {
 				chunkData = converted
 			}

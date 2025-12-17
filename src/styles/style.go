@@ -31,9 +31,9 @@ func ParseStyle(s string) (Style, error) {
 	switch s {
 	case "openai-chat-completions", "openai", "":
 		return StyleOpenAIChat, nil
-	/*case "openai-responses", "responses":
+	case "openai-responses", "responses":
 		return StyleOpenAIResponses, nil
-	case "anthropic-messages", "anthropic":
+	/*case "anthropic-messages", "anthropic":
 		return StyleAnthropic, nil
 	case "google-genai", "google":
 		return StyleGoogleGenAI, nil
