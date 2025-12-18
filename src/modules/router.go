@@ -12,6 +12,8 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/neutrome-labs/open-ai-router/src/drivers/openai"
+	"github.com/neutrome-labs/open-ai-router/src/drivers/virtual"
+	"github.com/neutrome-labs/open-ai-router/src/plugin"
 	"github.com/neutrome-labs/open-ai-router/src/services"
 	"github.com/neutrome-labs/open-ai-router/src/styles"
 	"go.uber.org/zap"
@@ -49,10 +51,11 @@ type RouterModule struct {
 
 // ProviderConfig defines a provider's configuration.
 type ProviderConfig struct {
-	Name       string `json:"name,omitempty"`
-	APIBaseURL string `json:"api_base_url,omitempty"`
-	Style      string `json:"style,omitempty"`
-	Impl       services.ProviderService
+	Name          string            `json:"name,omitempty"`
+	APIBaseURL    string            `json:"api_base_url,omitempty"`
+	Style         string            `json:"style,omitempty"`
+	ModelMappings map[string]string `json:"model_mappings,omitempty"` // For virtual providers: maps model name to target model spec
+	Impl          services.ProviderService
 }
 
 func ParseRouterModule(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
@@ -109,7 +112,10 @@ func (m *RouterModule) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				if _, ok := m.ProviderConfigs[providerName]; ok {
 					return d.Errf("provider %s already defined", providerName)
 				}
-				p := ProviderConfig{Name: providerName}
+				p := ProviderConfig{
+					Name:          providerName,
+					ModelMappings: make(map[string]string),
+				}
 				for d.NextBlock(1) {
 					switch d.Val() {
 					case "api_base_url":
@@ -122,11 +128,23 @@ func (m *RouterModule) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 							return d.ArgErr()
 						}
 						p.Style = strings.ToLower(d.Val())
+					case "model":
+						// model <virtual_name> <target_model>
+						// For virtual providers: maps a model name to a target model spec
+						// Target can include plugins via + syntax, e.g. "openai/gpt-4+models:gpt-4.1,gpt-3.5"
+						args := d.RemainingArgs()
+						if len(args) != 2 {
+							return d.Errf("model expects <virtual_name> <target_model>, got %d args", len(args))
+						}
+						virtualName := args[0]
+						targetModel := args[1]
+						p.ModelMappings[virtualName] = targetModel
 					default:
 						return d.Errf("unrecognized provider option '%s' for provider '%s'", d.Val(), providerName)
 					}
 				}
-				if p.APIBaseURL == "" {
+				// Virtual providers don't need api_base_url
+				if p.Style != "virtual" && p.APIBaseURL == "" {
 					return d.Errf("provider %s: api_base_url is required", providerName)
 				}
 				m.ProviderConfigs[providerName] = &p
@@ -167,22 +185,27 @@ func (m *RouterModule) Provision(ctx caddy.Context) error {
 	for _, name := range m.ProvidersOrder {
 		p := m.ProviderConfigs[name]
 
-		if p.APIBaseURL == "" {
-			return fmt.Errorf("provider %s: api_base_url is required", name)
-		}
-		parsedURL, err := url.Parse(p.APIBaseURL)
-		if err != nil {
-			return fmt.Errorf("provider %s: invalid api_base_url '%s': %v", name, p.APIBaseURL, err)
-		}
-
 		providerStyle, err := styles.ParseStyle(p.Style)
 		if err != nil {
 			return fmt.Errorf("provider %s: invalid style '%s': %v", name, p.Style, err)
 		}
 
+		// Virtual providers don't need api_base_url
+		var parsedURL url.URL
+		if providerStyle != styles.StyleVirtual {
+			if p.APIBaseURL == "" {
+				return fmt.Errorf("provider %s: api_base_url is required", name)
+			}
+			parsed, err := url.Parse(p.APIBaseURL)
+			if err != nil {
+				return fmt.Errorf("provider %s: invalid api_base_url '%s': %v", name, p.APIBaseURL, err)
+			}
+			parsedURL = *parsed
+		}
+
 		p.Impl = services.ProviderService{
 			Name:      name,
-			ParsedURL: *parsedURL,
+			ParsedURL: parsedURL,
 			Style:     providerStyle,
 			Router:    &m.Impl,
 		}
@@ -199,6 +222,24 @@ func (m *RouterModule) Provision(ctx caddy.Context) error {
 			providerCommands = map[string]any{
 				"list_models": &openai.ListModels{},
 				"inference":   &openai.Responses{},
+			}
+		case styles.StyleVirtual: // Virtual provider (model aliasing)
+			if len(p.ModelMappings) == 0 {
+				return fmt.Errorf("provider %s: virtual provider requires at least one model mapping", name)
+			}
+			// Register the virtual plugin so it can intercept requests
+			virtualPlugin := &virtual.VirtualPlugin{
+				ProviderName:  name,
+				ModelMappings: p.ModelMappings,
+			}
+			plugin.RegisterPlugin("virtual:"+name, virtualPlugin)
+
+			providerCommands = map[string]any{
+				"list_models": &virtual.VirtualListModels{
+					ProviderName:  name,
+					ModelMappings: p.ModelMappings,
+				},
+				// No inference command - virtual providers work via plugin interception
 			}
 		default:
 			return fmt.Errorf("provider %s: no driver for style '%s'", name, providerStyle)
@@ -229,6 +270,18 @@ func (m *RouterModule) ServeHTTP(w http.ResponseWriter, req *http.Request, next 
 	return next.ServeHTTP(w, req)
 }
 
+// uniqueProviders returns a slice with priority provider first, followed by
+// remaining providers from order, excluding any duplicates.
+func uniqueProviders(priority string, order []string) []string {
+	result := []string{priority}
+	for _, p := range order {
+		if p != priority {
+			result = append(result, p)
+		}
+	}
+	return result
+}
+
 // ResolveProvidersOrderAndModel determines provider order and normalizes the model name.
 func (m *RouterModule) ResolveProvidersOrderAndModel(model string) (providerNames []string, actualModelName string) {
 	m.Impl.Mu.RLock()
@@ -246,7 +299,7 @@ func (m *RouterModule) ResolveProvidersOrderAndModel(model string) (providerName
 			m.Impl.Logger.Debug("Found explicit provider by prefix",
 				zap.String("prefix", pName),
 				zap.String("model", actualModelName))
-			return append([]string{pName}, m.ProvidersOrder...), actualModelName
+			return uniqueProviders(pName, m.ProvidersOrder), actualModelName
 		}
 		m.Impl.Logger.Debug("Prefix found but provider not recognized, checking defaults",
 			zap.String("prefix", pName),
@@ -260,7 +313,7 @@ func (m *RouterModule) ResolveProvidersOrderAndModel(model string) (providerName
 				m.Impl.Logger.Debug("Found default provider for model",
 					zap.String("model", actualModelName),
 					zap.String("provider", pName))
-				return append([]string{pName}, m.ProvidersOrder...), actualModelName
+				return uniqueProviders(pName, m.ProvidersOrder), actualModelName
 			}
 			m.Impl.Logger.Warn("Default provider for model configured but provider itself not found",
 				zap.String("model", actualModelName),

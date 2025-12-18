@@ -12,8 +12,11 @@ import (
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/google/uuid"
 	"github.com/neutrome-labs/open-ai-router/src/drivers"
+	"github.com/neutrome-labs/open-ai-router/src/drivers/openai"
+	"github.com/neutrome-labs/open-ai-router/src/drivers/virtual"
 	"github.com/neutrome-labs/open-ai-router/src/modules"
 	"github.com/neutrome-labs/open-ai-router/src/plugin"
+	"github.com/neutrome-labs/open-ai-router/src/plugins"
 	"github.com/neutrome-labs/open-ai-router/src/sse"
 	"github.com/neutrome-labs/open-ai-router/src/styles"
 	"go.uber.org/zap"
@@ -105,6 +108,14 @@ func (*OpenAIChatCompletionsModule) CaddyModule() caddy.ModuleInfo {
 
 func (m *OpenAIChatCompletionsModule) Provision(ctx caddy.Context) error {
 	m.logger = ctx.Logger(m)
+
+	// Provision package-level loggers for all subsystems
+	plugin.Logger = m.logger.Named("plugin")
+	plugins.Logger = m.logger.Named("plugins")
+	openai.Logger = m.logger.Named("openai")
+	virtual.Logger = m.logger.Named("virtual")
+	styles.Logger = m.logger.Named("styles")
+
 	return nil
 }
 
@@ -319,7 +330,6 @@ func (m *OpenAIChatCompletionsModule) handleRequest(
 	r *http.Request,
 ) error {
 	providers, model := router.ResolveProvidersOrderAndModel(knownReq.Model)
-	knownReq.Model = model
 
 	m.logger.Debug("Resolved providers",
 		zap.String("model", model),
@@ -342,9 +352,11 @@ func (m *OpenAIChatCompletionsModule) handleRequest(
 			continue
 		}
 
-		// Clone request for isolated plugin processing per provider
-		providerReq := make([]byte, len(reqBody))
-		copy(providerReq, reqBody)
+		providerReq, err := m.copyRequestWithModel(reqBody, model)
+		if err != nil {
+			m.logger.Error("failed to copy request with model", zap.String("provider", name), zap.Error(err))
+			continue
+		}
 
 		// Run before plugins with provider context
 		processedReq, err := chain.RunBefore(&p.Impl, r, providerReq)
@@ -398,6 +410,26 @@ func (m *OpenAIChatCompletionsModule) handleRequest(
 	}
 
 	return nil
+}
+
+func (m *OpenAIChatCompletionsModule) copyRequestWithModel(reqBody []byte, model string) ([]byte, error) {
+	var clonedJson map[string]json.RawMessage
+	if err := json.Unmarshal(reqBody, &clonedJson); err != nil {
+		return nil, err
+	}
+
+	modelJSON, err := json.Marshal(model)
+	if err != nil {
+		return nil, err
+	}
+	clonedJson["model"] = modelJSON
+
+	result, err := json.Marshal(clonedJson)
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
 }
 
 var (

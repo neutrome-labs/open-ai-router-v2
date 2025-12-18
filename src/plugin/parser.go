@@ -20,6 +20,16 @@ var TailPlugins = [][2]string{
 func TryResolvePlugins(url url.URL, model string) *PluginChain {
 	chain := NewPluginChain()
 
+	// Add all virtual provider plugins first (they implement RecursiveHandlerPlugin)
+	// These intercept requests targeting virtual providers
+	for name, p := range Registry {
+		if strings.HasPrefix(name, "virtual:") {
+			if _, ok := p.(RecursiveHandlerPlugin); ok {
+				chain.Add(p, "")
+			}
+		}
+	}
+
 	// Add mandatory plugins
 	for _, mp := range HeadPlugins {
 		if p, ok := GetPlugin(mp[0]); ok {

@@ -18,6 +18,7 @@ type Style string
 
 const (
 	StyleUnknown         Style = ""
+	StyleVirtual         Style = "virtual"
 	StyleOpenAIChat      Style = "openai-chat-completions"
 	StyleOpenAIResponses Style = "openai-responses"
 	StyleAnthropic       Style = "anthropic-messages"
@@ -29,6 +30,8 @@ const (
 // ParseStyle parses a style string, defaulting to OpenAI chat completions
 func ParseStyle(s string) (Style, error) {
 	switch s {
+	case "virtual":
+		return StyleVirtual, nil
 	case "openai-chat-completions", "openai", "":
 		return StyleOpenAIChat, nil
 	case "openai-responses", "responses":

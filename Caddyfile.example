@@ -1,24 +1,23 @@
-http://localhost:9111 {
-	log {
-		output stderr
-		level DEBUG
-	}
+{
+	debug
+}
 
-	ai_auth_env {
-		name default
-	}
+http://localhost:9111 {
+	ai_auth_env
 
 	ai_router {
-		name default
-		auth default
+		provider openai {
+            api_base_url "https://api.openai.com/v1"
+			style "responses"
+        }
 
 		provider openrouter {
 			api_base_url "https://openrouter.ai/api/v1"
 		}
 
-		provider cf {
-			api_base_url "https://api.cloudflare.com/client/v4/accounts/123456789abc/ai"
-			style "cf"
+		provider alias {
+			style "virtual"
+			model "fancy-model-name" "openai/gpt-4.1-mini"
 		}
 	}
 
@@ -46,34 +45,6 @@ http://localhost:9111 {
 			respond @options 204
 
 			ai_openai_chat_completions {
-				router default
-			}
-		}
-	}
-
-	handle_path /v1/responses* {
-		route {
-			header Access-Control-Allow-Origin "*"
-			header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
-			header Access-Control-Allow-Headers "Authorization, Content-Type, X-Requested-With, X-CSRF-Token, *"
-			@options method OPTIONS
-			respond @options 204
-
-			ai_openai_responses {
-				router default
-			}
-		}
-	}
-
-	handle_path /v1/messages* {
-		route {
-			header Access-Control-Allow-Origin "*"
-			header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
-			header Access-Control-Allow-Headers "Authorization, Content-Type, X-Requested-With, X-CSRF-Token, *"
-			@options method OPTIONS
-			respond @options 204
-
-			ai_anthropic_messages {
 				router default
 			}
 		}

@@ -12,6 +12,10 @@ clean:
 tidy:
 	go mod tidy
 
+upgrade:
+	go get -u ./...
+	go mod tidy
+
 # Run all unit tests
 test:
 	go test -v ./src/... -count=1
