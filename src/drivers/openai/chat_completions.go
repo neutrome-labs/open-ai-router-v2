@@ -2,7 +2,6 @@ package openai
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,7 +19,7 @@ var Logger *zap.Logger
 // ChatCompletions implements chat completions for OpenAI-compatible APIs
 type ChatCompletions struct{}
 
-func (c *ChatCompletions) createRequest(p *services.ProviderService, req json.RawMessage, r *http.Request, endpoint string) (*http.Request, error) {
+func (c *ChatCompletions) createRequest(p *services.ProviderService, reqBody []byte, r *http.Request, endpoint string) (*http.Request, error) {
 	targetUrl := p.ParsedURL
 	targetUrl.Path += endpoint
 
@@ -32,8 +31,8 @@ func (c *ChatCompletions) createRequest(p *services.ProviderService, req json.Ra
 		Method:        "POST",
 		URL:           &targetUrl,
 		Header:        targetHeader,
-		Body:          io.NopCloser(bytes.NewReader(req)),
-		ContentLength: int64(len(req)),
+		Body:          io.NopCloser(bytes.NewReader(reqBody)),
+		ContentLength: int64(len(reqBody)),
 	}
 	httpReq = httpReq.WithContext(r.Context())
 
@@ -49,7 +48,7 @@ func (c *ChatCompletions) createRequest(p *services.ProviderService, req json.Ra
 }
 
 // DoInference implements InferenceCommand for OpenAI Chat Completions API
-func (c *ChatCompletions) DoInference(p *services.ProviderService, req json.RawMessage, r *http.Request) (*http.Response, json.RawMessage, error) {
+func (c *ChatCompletions) DoInference(p *services.ProviderService, reqBody []byte, r *http.Request) (*http.Response, []byte, error) {
 	if Logger != nil {
 		Logger.Debug("DoInference (chat_completions) starting",
 			zap.String("provider", p.Name),
@@ -57,7 +56,7 @@ func (c *ChatCompletions) DoInference(p *services.ProviderService, req json.RawM
 			zap.String("base_url", p.ParsedURL.String()))
 	}
 
-	httpReq, err := c.createRequest(p, req, r, "/chat/completions")
+	httpReq, err := c.createRequest(p, reqBody, r, "/chat/completions")
 	if err != nil {
 		if Logger != nil {
 			Logger.Error("DoInference (chat_completions) createRequest failed", zap.Error(err))
@@ -93,18 +92,18 @@ func (c *ChatCompletions) DoInference(p *services.ProviderService, req json.RawM
 		return res, nil, fmt.Errorf("%s", string(respData))
 	}
 
-	return res, json.RawMessage(respData), nil
+	return res, respData, nil
 }
 
 // DoInferenceStream implements InferenceCommand for streaming OpenAI Chat Completions
-func (c *ChatCompletions) DoInferenceStream(p *services.ProviderService, req json.RawMessage, r *http.Request) (*http.Response, chan drivers.InferenceStreamChunk, error) {
+func (c *ChatCompletions) DoInferenceStream(p *services.ProviderService, reqBody []byte, r *http.Request) (*http.Response, chan drivers.InferenceStreamChunk, error) {
 	if Logger != nil {
 		Logger.Debug("DoInferenceStream (chat_completions) starting",
 			zap.String("provider", p.Name))
 		// zap.String("model", req.GetModel())) todo
 	}
 
-	httpReq, err := c.createRequest(p, req, r, "/chat/completions")
+	httpReq, err := c.createRequest(p, reqBody, r, "/chat/completions")
 	if err != nil {
 		if Logger != nil {
 			Logger.Error("DoInferenceStream (chat_completions) createRequest failed", zap.Error(err))
@@ -158,7 +157,7 @@ func (c *ChatCompletions) DoInferenceStream(p *services.ProviderService, req jso
 				chunks <- drivers.InferenceStreamChunk{RuntimeError: err}
 				return
 			}
-			chunks <- drivers.InferenceStreamChunk{Data: json.RawMessage(respData)}
+			chunks <- drivers.InferenceStreamChunk{Data: respData}
 			return
 		}
 
@@ -172,7 +171,7 @@ func (c *ChatCompletions) DoInferenceStream(p *services.ProviderService, req jso
 				return
 			}
 			if event.RawData != nil {
-				chunks <- drivers.InferenceStreamChunk{Data: json.RawMessage(event.RawData)}
+				chunks <- drivers.InferenceStreamChunk{Data: event.RawData}
 			}
 		}
 	}()

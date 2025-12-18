@@ -190,11 +190,18 @@ func (m *RouterModule) Provision(ctx caddy.Context) error {
 		// Initialize commands based on style
 		var providerCommands map[string]any
 		switch providerStyle {
-		default: // OpenAI-compatible (chat completions)
+		case styles.StyleOpenAIChat: // OpenAI-compatible (chat completions)
 			providerCommands = map[string]any{
 				"list_models": &openai.ListModels{},
 				"inference":   &openai.ChatCompletions{},
 			}
+		case styles.StyleOpenAIResponses: // OpenAI Responses API
+			providerCommands = map[string]any{
+				"list_models": &openai.ListModels{},
+				"inference":   &openai.Responses{},
+			}
+		default:
+			return fmt.Errorf("provider %s: no driver for style '%s'", name, providerStyle)
 		}
 		p.Impl.Commands = providerCommands
 

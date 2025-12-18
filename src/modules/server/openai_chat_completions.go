@@ -33,7 +33,7 @@ type KnownOpenAIChatRequest struct {
 
 // responseCaptureWriter captures response instead of writing to HTTP
 type responseCaptureWriter struct {
-	response json.RawMessage
+	response []byte
 	headers  http.Header
 }
 
@@ -45,7 +45,7 @@ func (w *responseCaptureWriter) Header() http.Header {
 }
 
 func (w *responseCaptureWriter) Write(data []byte) (int, error) {
-	w.response = json.RawMessage(data)
+	w.response = data
 	return len(data), nil
 }
 
@@ -152,14 +152,8 @@ func (m *OpenAIChatCompletionsModule) serveChatCompletions(
 		return nil
 	}
 
-	data, err := json.Marshal(resBody)
-	if err != nil {
-		m.logger.Error("Failed to serialize response", zap.Error(err))
-		return err
-	}
-
 	w.Header().Set("Content-Type", "application/json")
-	_, err = w.Write(data)
+	_, err = w.Write(resBody)
 	return err
 }
 
@@ -200,7 +194,7 @@ func (m *OpenAIChatCompletionsModule) serveChatCompletionsStream(
 		return err
 	}
 
-	var lastChunk json.RawMessage
+	var lastChunk []byte
 
 	for chunk := range stream {
 		if chunk.RuntimeError != nil {
@@ -229,12 +223,7 @@ func (m *OpenAIChatCompletionsModule) serveChatCompletionsStream(
 
 		if chunkData != nil {
 			lastChunk = chunkData
-			data, err := json.Marshal(chunkData)
-			if err != nil {
-				m.logger.Error("Failed to serialize chunk", zap.Error(err))
-				continue
-			}
-			if err := sseWriter.WriteRaw(data); err != nil {
+			if err := sseWriter.WriteRaw(chunkData); err != nil {
 				m.logger.Error("chat completions stream write error", zap.Error(err))
 				return err
 			}

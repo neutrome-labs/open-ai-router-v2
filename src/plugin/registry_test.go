@@ -48,7 +48,7 @@ func TestPluginChain_RunBefore(t *testing.T) {
 	p, _ := plugin.GetPlugin("models")
 	chain.Add(p, "")
 
-	req := json.RawMessage(`{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}`)
+	req := []byte(`{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}`)
 
 	httpReq := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 	provider := &services.ProviderService{Name: "test"}
@@ -75,8 +75,8 @@ func TestPluginChain_RunAfter(t *testing.T) {
 	p, _ := plugin.GetPlugin("models")
 	chain.Add(p, "")
 
-	req := json.RawMessage(`{"model":"gpt-4"}`)
-	resp := json.RawMessage(`{"model":"gpt-4","choices":[{"message":{"role":"assistant","content":"Hi"}}]}`)
+	req := []byte(`{"model":"gpt-4"}`)
+	resp := []byte(`{"model":"gpt-4","choices":[{"message":{"role":"assistant","content":"Hi"}}]}`)
 
 	httpReq := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 	httpResp := &http.Response{StatusCode: 200}
