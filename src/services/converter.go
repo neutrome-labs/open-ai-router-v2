@@ -8,7 +8,6 @@ import (
 
 // DefaultConverter provides request/response conversion between styles.
 // Currently only supports passthrough (same style in/out).
-// Conversion logic will be implemented later using json.RawMessage.
 type DefaultConverter struct{}
 
 // ConvertRequest converts a request from one style to another.

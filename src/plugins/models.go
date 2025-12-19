@@ -121,3 +121,7 @@ func parseModelListForFallback(model string) ([]string, string) {
 
 	return models, pluginSuffix
 }
+
+var (
+	_ plugin.RecursiveHandlerPlugin = (*Models)(nil)
+)

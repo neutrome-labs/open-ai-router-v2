@@ -5,7 +5,6 @@ package virtual
 
 import (
 	"bytes"
-	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -13,6 +12,7 @@ import (
 	"github.com/neutrome-labs/open-ai-router/src/drivers"
 	"github.com/neutrome-labs/open-ai-router/src/plugin"
 	"github.com/neutrome-labs/open-ai-router/src/services"
+	"github.com/neutrome-labs/open-ai-router/src/styles"
 	"go.uber.org/zap"
 )
 
@@ -37,24 +37,11 @@ func (v *VirtualPlugin) Name() string {
 func (v *VirtualPlugin) RecursiveHandler(
 	params string,
 	invoker plugin.HandlerInvoker,
-	reqBody []byte,
+	reqJson styles.PartialJSON,
 	w http.ResponseWriter,
 	r *http.Request,
 ) (handled bool, err error) {
-	// Parse request to get model name
-	var reqMap map[string]json.RawMessage
-	if err := json.Unmarshal(reqBody, &reqMap); err != nil {
-		return false, nil // Let normal flow handle parse errors
-	}
-
-	var modelName string
-	if modelRaw, ok := reqMap["model"]; ok {
-		if err := json.Unmarshal(modelRaw, &modelName); err != nil {
-			return false, nil // Let normal flow handle parse errors
-		}
-	} else {
-		return false, nil // No model field, let normal flow handle
-	}
+	modelName := styles.TryGetFromPartialJSON[string](reqJson, "model")
 
 	// Check if this is targeting our virtual provider
 	// Format: "virtualProvider/modelName"
@@ -82,13 +69,13 @@ func (v *VirtualPlugin) RecursiveHandler(
 		zap.String("target_model", targetModel))
 
 	// Rewrite model in request to the target
-	reqMap["model"], err = json.Marshal(targetModel)
+	err = reqJson.Set("model", targetModel)
 	if err != nil {
 		return true, err
 	}
 
 	// Marshal the modified request back to JSON
-	newReqBody, err := json.Marshal(reqMap)
+	newReqBody, err := reqJson.Marshal()
 	if err != nil {
 		return true, err
 	}

@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/neutrome-labs/open-ai-router/src/drivers"
+	"github.com/neutrome-labs/open-ai-router/src/plugin"
 	"github.com/neutrome-labs/open-ai-router/src/services"
 	"github.com/neutrome-labs/open-ai-router/src/styles"
 	"go.uber.org/zap"
@@ -86,3 +87,7 @@ func (f *Fuzz) Before(params string, p *services.ProviderService, r *http.Reques
 		zap.String("requestedModel", model))
 	return reqJson, nil
 }
+
+var (
+	_ plugin.BeforePlugin = (*Fuzz)(nil)
+)

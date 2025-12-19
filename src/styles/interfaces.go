@@ -2,10 +2,52 @@ package styles
 
 import (
 	"encoding/json"
+	"fmt"
 	"maps"
+
+	"go.uber.org/zap"
+)
+
+// Logger for debug output (set by module during Provision)
+var Logger *zap.Logger = zap.NewNop()
+
+// Style represents a provider's API style
+type Style string
+
+const (
+	StyleUnknown         Style = ""
+	StyleVirtual         Style = "virtual"
+	StyleChatCompletions Style = "openai-chat-completions"
+	StyleResponses       Style = "openai-responses"
+	StyleAnthropic       Style = "anthropic-messages"
+	StyleGoogleGenAI     Style = "google-genai"
+	StyleCfAiGateway     Style = "cloudflare-ai-gateway"
+	StyleCfWorkersAi     Style = "cloudflare-workers-ai"
 )
 
 type PartialJSON map[string]json.RawMessage
+
+// ParseStyle parses a style string, defaulting to OpenAI chat completions
+func ParseStyle(s string) (Style, error) {
+	switch s {
+	case "virtual":
+		return StyleVirtual, nil
+	case "openai-chat-completions", "openai", "":
+		return StyleChatCompletions, nil
+	case "openai-responses", "responses":
+		return StyleResponses, nil
+	/*case "anthropic-messages", "anthropic":
+		return StyleAnthropic, nil
+	case "google-genai", "google":
+		return StyleGoogleGenAI, nil
+	case "cloudflare-ai-gateway":
+		return StyleCfAiGateway, nil
+	case "cloudflare-workers-ai", "cloudflare", "cf":
+		return StyleCfWorkersAi, nil*/
+	default:
+		return StyleUnknown, fmt.Errorf("unknown style: %s", s)
+	}
+}
 
 func ParsePartialJSON(data []byte) (PartialJSON, error) {
 	var pj PartialJSON

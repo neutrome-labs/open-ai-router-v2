@@ -10,6 +10,7 @@ import (
 
 	"github.com/neutrome-labs/open-ai-router/src/plugin"
 	"github.com/neutrome-labs/open-ai-router/src/services"
+	"github.com/neutrome-labs/open-ai-router/src/styles"
 )
 
 // streamAccumulator holds accumulated content from streaming chunks
@@ -23,7 +24,7 @@ type streamAccumulator struct {
 type choiceAccum struct {
 	role         string
 	content      strings.Builder
-	toolCalls    []map[string]any
+	toolCalls    []styles.ChatCompletionsToolCall
 	finishReason string
 }
 
@@ -33,41 +34,29 @@ func newStreamAccumulator() *streamAccumulator {
 	}
 }
 
-// accumulate merges a streaming chunk into the accumulator (works with raw JSON)
-func (sa *streamAccumulator) accumulate(chunk json.RawMessage) {
+// accumulate merges a streaming chunk into the accumulator
+func (sa *streamAccumulator) accumulate(chunk styles.PartialJSON) {
 	sa.mu.Lock()
 	defer sa.mu.Unlock()
 
-	var data struct {
-		Model   string `json:"model"`
-		Choices []struct {
-			Index        int    `json:"index"`
-			FinishReason string `json:"finish_reason"`
-			Delta        *struct {
-				Role      string `json:"role"`
-				Content   string `json:"content"`
-				ToolCalls []struct {
-					Index    int    `json:"index"`
-					ID       string `json:"id"`
-					Type     string `json:"type"`
-					Function *struct {
-						Name      string `json:"name"`
-						Arguments string `json:"arguments"`
-					} `json:"function"`
-				} `json:"tool_calls"`
-			} `json:"delta"`
-		} `json:"choices"`
+	// Extract model if present
+	model := styles.TryGetFromPartialJSON[string](chunk, "model")
+	if model != "" {
+		sa.model = model
 	}
 
-	if err := json.Unmarshal(chunk, &data); err != nil {
+	// Extract choices
+	choicesRaw, ok := chunk["choices"]
+	if !ok {
 		return
 	}
 
-	if data.Model != "" {
-		sa.model = data.Model
+	var choices []styles.ChatCompletionsChoice
+	if err := json.Unmarshal(choicesRaw, &choices); err != nil {
+		return
 	}
 
-	for _, choice := range data.Choices {
+	for _, choice := range choices {
 		idx := choice.Index
 
 		accum, exists := sa.choices[idx]
@@ -84,7 +73,9 @@ func (sa *streamAccumulator) accumulate(chunk json.RawMessage) {
 			if choice.Delta.Role != "" {
 				accum.role = choice.Delta.Role
 			}
-			accum.content.WriteString(choice.Delta.Content)
+			if content, ok := choice.Delta.Content.(string); ok {
+				accum.content.WriteString(content)
+			}
 
 			// accumulate tool calls
 			for _, tc := range choice.Delta.ToolCalls {
@@ -92,28 +83,28 @@ func (sa *streamAccumulator) accumulate(chunk json.RawMessage) {
 
 				// extend slice if needed
 				for len(accum.toolCalls) <= tcIdx {
-					accum.toolCalls = append(accum.toolCalls, map[string]any{})
+					accum.toolCalls = append(accum.toolCalls, styles.ChatCompletionsToolCall{})
 				}
 
-				existing := accum.toolCalls[tcIdx]
+				existing := &accum.toolCalls[tcIdx]
 				if tc.ID != "" {
-					existing["id"] = tc.ID
+					existing.ID = tc.ID
 				}
 				if tc.Type != "" {
-					existing["type"] = tc.Type
+					existing.Type = tc.Type
 				}
 				if tc.Function != nil {
-					existingFn, _ := existing["function"].(map[string]any)
-					if existingFn == nil {
-						existingFn = map[string]any{}
-						existing["function"] = existingFn
+					if existing.Function == nil {
+						existing.Function = &struct {
+							Name      string `json:"name,omitempty"`
+							Arguments string `json:"arguments,omitempty"`
+						}{}
 					}
 					if tc.Function.Name != "" {
-						existingFn["name"] = tc.Function.Name
+						existing.Function.Name = tc.Function.Name
 					}
 					if tc.Function.Arguments != "" {
-						prevArgs, _ := existingFn["arguments"].(string)
-						existingFn["arguments"] = prevArgs + tc.Function.Arguments
+						existing.Function.Arguments += tc.Function.Arguments
 					}
 				}
 			}
@@ -155,20 +146,20 @@ type Posthog struct{}
 
 func (p *Posthog) Name() string { return "posthog" }
 
-func (p *Posthog) Before(params string, provider *services.ProviderService, r *http.Request, req json.RawMessage) (json.RawMessage, error) {
+func (p *Posthog) Before(params string, provider *services.ProviderService, r *http.Request, reqJson styles.PartialJSON) (styles.PartialJSON, error) {
 	ctx := r.Context()
 	ctx = context.WithValue(ctx, posthogTimeStartKey, time.Now())
 	ctx = context.WithValue(ctx, posthogStreamAccumKey, newStreamAccumulator())
 	*r = *r.WithContext(ctx)
-	return req, nil
+	return reqJson, nil
 }
 
-func (p *Posthog) After(params string, provider *services.ProviderService, r *http.Request, req json.RawMessage, hres *http.Response, res json.RawMessage) (json.RawMessage, error) {
-	p.fireEvent(provider, r, req, hres, res, false, nil)
-	return res, nil
+func (p *Posthog) After(params string, provider *services.ProviderService, r *http.Request, reqJson styles.PartialJSON, res *http.Response, resJson styles.PartialJSON) (styles.PartialJSON, error) {
+	p.fireEvent(provider, r, reqJson, res, resJson, false, nil)
+	return resJson, nil
 }
 
-func (p *Posthog) AfterChunk(params string, provider *services.ProviderService, r *http.Request, req json.RawMessage, hres *http.Response, chunk json.RawMessage) (json.RawMessage, error) {
+func (p *Posthog) AfterChunk(params string, provider *services.ProviderService, r *http.Request, reqJson styles.PartialJSON, hres *http.Response, chunk styles.PartialJSON) (styles.PartialJSON, error) {
 	// Accumulate chunk content for final event
 	ctx := r.Context()
 	if accumVal := ctx.Value(posthogStreamAccumKey); accumVal != nil {
@@ -180,39 +171,34 @@ func (p *Posthog) AfterChunk(params string, provider *services.ProviderService, 
 	return chunk, nil
 }
 
-func (p *Posthog) StreamEnd(params string, provider *services.ProviderService, r *http.Request, req json.RawMessage, hres *http.Response, lastChunk json.RawMessage) error {
-	p.fireEvent(provider, r, req, hres, lastChunk, true, nil)
+func (p *Posthog) StreamEnd(params string, provider *services.ProviderService, r *http.Request, reqJson styles.PartialJSON, res *http.Response, lastChunk styles.PartialJSON) error {
+	p.fireEvent(provider, r, reqJson, res, lastChunk, true, nil)
 	return nil
 }
 
-func (p *Posthog) OnError(params string, provider *services.ProviderService, r *http.Request, req json.RawMessage, hres *http.Response, providerErr error) error {
-	isStreaming := getStreamFromRaw(req)
-	p.fireEvent(provider, r, req, hres, nil, isStreaming, providerErr)
+func (p *Posthog) OnError(params string, provider *services.ProviderService, r *http.Request, reqJson styles.PartialJSON, res *http.Response, providerErr error) error {
+	isStreaming := styles.TryGetFromPartialJSON[bool](reqJson, "stream")
+	p.fireEvent(provider, r, reqJson, res, nil, isStreaming, providerErr)
 	return nil
 }
 
-// getStreamFromRaw extracts the stream field from raw JSON request
-func getStreamFromRaw(req json.RawMessage) bool {
-	var data struct {
-		Stream bool `json:"stream"`
-	}
-	if err := json.Unmarshal(req, &data); err != nil {
-		return false
-	}
-	return data.Stream
+func (p *Posthog) fireEvent(provider *services.ProviderService, r *http.Request, reqJson styles.PartialJSON, hres *http.Response, resJson styles.PartialJSON, isStreaming bool, providerErr error) {
+	ctx := r.Context()
+	userId, _ := ctx.Value(plugin.ContextUserID()).(string)
+
+	// Extract common props
+	props := p.extractCommonProps(provider, r, reqJson, hres, resJson, isStreaming, providerErr)
+
+	// Extract chat completions specific props
+	p.extractChatCompletionsProps(props, reqJson, resJson, isStreaming, ctx)
+
+	_ = services.FireObservabilityEvent(userId, "", "$ai_generation", props)
 }
 
-func (p *Posthog) fireEvent(provider *services.ProviderService, r *http.Request, req json.RawMessage, hres *http.Response, res json.RawMessage, isStreaming bool, providerErr error) {
+func (p *Posthog) extractCommonProps(provider *services.ProviderService, r *http.Request, reqJson styles.PartialJSON, hres *http.Response, resJson styles.PartialJSON, isStreaming bool, providerErr error) map[string]any {
 	ctx := r.Context()
 	traceId, _ := ctx.Value(plugin.ContextTraceID()).(string)
 	startTime, _ := ctx.Value(posthogTimeStartKey).(time.Time)
-	userId, _ := ctx.Value(plugin.ContextUserID()).(string)
-
-	// Get stream accumulator
-	var accum *streamAccumulator
-	if accumVal := ctx.Value(posthogStreamAccumKey); accumVal != nil {
-		accum, _ = accumVal.(*streamAccumulator)
-	}
 
 	var latency float64
 	if !startTime.IsZero() {
@@ -224,7 +210,6 @@ func (p *Posthog) fireEvent(provider *services.ProviderService, r *http.Request,
 	var errorMessage string
 	httpStatus := 0
 
-	// Check for explicit provider error first
 	if providerErr != nil {
 		isError = true
 		errorMessage = providerErr.Error()
@@ -236,16 +221,13 @@ func (p *Posthog) fireEvent(provider *services.ProviderService, r *http.Request,
 			isError = true
 		}
 	} else if providerErr != nil {
-		// No response but we have an error - likely network/connection failure
 		isError = true
 	}
 
-	if res == nil && providerErr == nil {
-		// No response and no explicit error - something unexpected happened
+	if resJson == nil && providerErr == nil && !isStreaming {
 		isError = true
 	}
 
-	// Extract provider info safely
 	providerName := ""
 	providerBaseURL := ""
 	if provider != nil {
@@ -253,26 +235,20 @@ func (p *Posthog) fireEvent(provider *services.ProviderService, r *http.Request,
 		providerBaseURL = provider.ParsedURL.String()
 	}
 
-	// Extract request fields
-	var reqData struct {
-		Model       string          `json:"model"`
-		Stream      bool            `json:"stream"`
-		Temperature *float64        `json:"temperature"`
-		MaxTokens   int             `json:"max_tokens"`
-		Messages    json.RawMessage `json:"messages"`
-		Tools       json.RawMessage `json:"tools"`
-	}
-	_ = json.Unmarshal(req, &reqData)
+	model := styles.TryGetFromPartialJSON[string](reqJson, "model")
+	stream := styles.TryGetFromPartialJSON[bool](reqJson, "stream")
+	temp := styles.TryGetFromPartialJSON[*float64](reqJson, "temperature")
+	maxTokens := styles.TryGetFromPartialJSON[int](reqJson, "max_tokens")
 
 	props := map[string]any{
 		"$ai_trace_id":    traceId,
-		"$ai_model":       reqData.Model,
+		"$ai_model":       model,
 		"$ai_provider":    providerName,
 		"$ai_latency":     latency,
 		"$ai_base_url":    providerBaseURL,
 		"$ai_request_url": r.URL.String(),
 		"$ai_is_error":    isError,
-		"$ai_stream":      reqData.Stream,
+		"$ai_stream":      stream,
 		"$ai_http_status": httpStatus,
 	}
 
@@ -280,62 +256,57 @@ func (p *Posthog) fireEvent(provider *services.ProviderService, r *http.Request,
 		props["$ai_error_message"] = errorMessage
 	}
 
-	// Extract usage from response
-	if res != nil {
-		var resData struct {
-			Usage *struct {
-				PromptTokens     int `json:"prompt_tokens"`
-				CompletionTokens int `json:"completion_tokens"`
-			} `json:"usage"`
-			Choices json.RawMessage `json:"choices"`
-		}
-		if err := json.Unmarshal(res, &resData); err == nil {
-			if resData.Usage != nil {
-				props["$ai_input_tokens"] = resData.Usage.PromptTokens
-				props["$ai_output_tokens"] = resData.Usage.CompletionTokens
+	if temp != nil {
+		props["$ai_temperature"] = *temp
+	}
+	if maxTokens > 0 {
+		props["$ai_max_tokens"] = maxTokens
+	}
+
+	// Usage
+	if resJson != nil {
+		usage := styles.TryGetFromPartialJSON[map[string]any](resJson, "usage")
+		if usage != nil {
+			if pt, ok := usage["prompt_tokens"].(float64); ok {
+				props["$ai_input_tokens"] = int(pt)
+			}
+			if ct, ok := usage["completion_tokens"].(float64); ok {
+				props["$ai_output_tokens"] = int(ct)
 			}
 		}
 	}
 
-	// Extract optional fields
-	if reqData.Temperature != nil {
-		props["$ai_temperature"] = *reqData.Temperature
-	}
-	if reqData.MaxTokens > 0 {
-		props["$ai_max_tokens"] = reqData.MaxTokens
+	return props
+}
+
+func (p *Posthog) extractChatCompletionsProps(props map[string]any, reqJson styles.PartialJSON, resJson styles.PartialJSON, isStreaming bool, ctx context.Context) {
+	if !services.PosthogIncludeContent {
+		return
 	}
 
-	// Include content if enabled
-	if services.PosthogIncludeContent {
-		if reqData.Messages != nil {
-			var messages []any
-			if err := json.Unmarshal(reqData.Messages, &messages); err == nil {
-				props["$ai_input"] = messages
-			}
-		}
-		if reqData.Tools != nil {
-			var tools []any
-			if err := json.Unmarshal(reqData.Tools, &tools); err == nil && len(tools) > 0 {
-				props["$ai_tools"] = tools
-			}
-		}
+	// Input
+	messages := styles.TryGetFromPartialJSON[[]any](reqJson, "messages")
+	if len(messages) > 0 {
+		props["$ai_input"] = messages
+	}
+	tools := styles.TryGetFromPartialJSON[[]any](reqJson, "tools")
+	if len(tools) > 0 {
+		props["$ai_tools"] = tools
 	}
 
-	// Build output choices - use accumulated data for streaming
-	if services.PosthogIncludeContent {
-		if isStreaming && accum != nil {
-			props["$ai_output_choices"] = accum.buildChoices()
-		} else if res != nil {
-			var resData struct {
-				Choices []any `json:"choices"`
-			}
-			if err := json.Unmarshal(res, &resData); err == nil {
-				props["$ai_output_choices"] = resData.Choices
+	// Output
+	if isStreaming {
+		if accumVal := ctx.Value(posthogStreamAccumKey); accumVal != nil {
+			if accum, ok := accumVal.(*streamAccumulator); ok {
+				props["$ai_output_choices"] = accum.buildChoices()
 			}
 		}
+	} else if resJson != nil {
+		choices := styles.TryGetFromPartialJSON[[]any](resJson, "choices")
+		if len(choices) > 0 {
+			props["$ai_output_choices"] = choices
+		}
 	}
-
-	_ = services.FireObservabilityEvent(userId, "", "$ai_generation", props)
 }
 
 // Context keys
@@ -344,4 +315,10 @@ type contextKey string
 const (
 	posthogTimeStartKey   contextKey = "posthog_time_start"
 	posthogStreamAccumKey contextKey = "posthog_stream_accum"
+)
+
+var (
+	_ plugin.BeforePlugin = (*Posthog)(nil)
+	_ plugin.AfterPlugin  = (*Posthog)(nil)
+	_ plugin.ErrorPlugin  = (*Posthog)(nil)
 )
