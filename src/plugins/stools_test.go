@@ -3,190 +3,10 @@ package plugins
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/neutrome-labs/open-ai-router/src/services"
+	"github.com/neutrome-labs/open-ai-router/src/styles"
 )
-
-func TestIsToolMessageRaw(t *testing.T) {
-	tests := []struct {
-		name     string
-		msg      message
-		expected bool
-	}{
-		{
-			name:     "regular user message",
-			msg:      message{Role: "user", Content: json.RawMessage(`"Hello"`)},
-			expected: false,
-		},
-		{
-			name:     "regular assistant message",
-			msg:      message{Role: "assistant", Content: json.RawMessage(`"Hi there"`)},
-			expected: false,
-		},
-		{
-			name:     "system message",
-			msg:      message{Role: "system", Content: json.RawMessage(`"You are helpful"`)},
-			expected: false,
-		},
-		{
-			name: "assistant with tool calls",
-			msg: message{
-				Role:      "assistant",
-				ToolCalls: json.RawMessage(`[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"NYC\"}"}}]`),
-			},
-			expected: true,
-		},
-		{
-			name:     "tool response message",
-			msg:      message{Role: "tool", ToolCallID: "call_1", Content: json.RawMessage(`"Sunny, 72F"`)},
-			expected: true,
-		},
-		{
-			name:     "message with tool_call_id",
-			msg:      message{Role: "assistant", ToolCallID: "call_1", Content: json.RawMessage(`"Result"`)},
-			expected: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := isToolMessageRaw(tt.msg)
-			if result != tt.expected {
-				t.Errorf("isToolMessageRaw() = %v, expected %v", result, tt.expected)
-			}
-		})
-	}
-}
-
-func TestTruncateContentRaw(t *testing.T) {
-	tests := []struct {
-		name     string
-		content  json.RawMessage
-		maxLen   int
-		expected string // expected string value after unmarshal
-	}{
-		{
-			name:     "short string unchanged",
-			content:  json.RawMessage(`"Hello"`),
-			maxLen:   100,
-			expected: "Hello",
-		},
-		{
-			name:     "long string truncated",
-			content:  json.RawMessage(`"This is a very long string that should be truncated to a shorter length with ellipsis at the end."`),
-			maxLen:   50,
-			expected: "This is a very long string that should be trunc...",
-		},
-		{
-			name:     "exact length unchanged",
-			content:  json.RawMessage(`"12345"`),
-			maxLen:   5,
-			expected: "12345",
-		},
-		{
-			name:     "very short maxLen",
-			content:  json.RawMessage(`"Hello"`),
-			maxLen:   2,
-			expected: "He",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := truncateContentRaw(tt.content, tt.maxLen)
-			var strResult string
-			if err := json.Unmarshal(result, &strResult); err != nil {
-				t.Fatalf("failed to unmarshal result: %v", err)
-			}
-			if strResult != tt.expected {
-				t.Errorf("truncateContentRaw() = %v, expected %v", strResult, tt.expected)
-			}
-		})
-	}
-}
-
-func TestTruncateToolCallsRaw(t *testing.T) {
-	toolCalls := json.RawMessage(`[{"id":"call_1","type":"function","index":0,"function":{"name":"get_weather","arguments":"{\"city\": \"New York City\", \"units\": \"fahrenheit\", \"detailed\": true, \"forecast_days\": 7}"}}]`)
-
-	result := truncateToolCallsRaw(toolCalls, 50)
-
-	var resultData []map[string]any
-	if err := json.Unmarshal(result, &resultData); err != nil {
-		t.Fatalf("failed to unmarshal result: %v", err)
-	}
-
-	if len(resultData) != 1 {
-		t.Fatalf("expected 1 tool call, got %d", len(resultData))
-	}
-	fn := resultData[0]["function"].(map[string]any)
-	if fn["name"] != "get_weather" {
-		t.Errorf("name should be preserved, got %s", fn["name"])
-	}
-	args := fn["arguments"].(string)
-	if len(args) > 50 {
-		t.Errorf("arguments should be truncated to 50 chars, got %d", len(args))
-	}
-	if args[len(args)-3:] != "..." {
-		t.Errorf("truncated arguments should end with ..., got %s", args)
-	}
-}
-
-func TestFindLastToolInteractionBoundaryRaw(t *testing.T) {
-	tests := []struct {
-		name     string
-		messages []message
-		expected int
-	}{
-		{
-			name: "no tool messages",
-			messages: []message{
-				{Role: "user", Content: json.RawMessage(`"Hello"`)},
-				{Role: "assistant", Content: json.RawMessage(`"Hi"`)},
-			},
-			expected: -1,
-		},
-		{
-			name: "single tool interaction at end - active",
-			messages: []message{
-				{Role: "user", Content: json.RawMessage(`"What's the weather?"`)},
-				{Role: "assistant", ToolCalls: json.RawMessage(`[{"id":"call_1"}]`)},
-				{Role: "tool", ToolCallID: "call_1", Content: json.RawMessage(`"Sunny"`)},
-			},
-			expected: 1, // preserve from index 1 (assistant with tool calls)
-		},
-		{
-			name: "tool interaction followed by text - all completed",
-			messages: []message{
-				{Role: "user", Content: json.RawMessage(`"What's the weather?"`)},
-				{Role: "assistant", ToolCalls: json.RawMessage(`[{"id":"call_1"}]`)},
-				{Role: "tool", ToolCallID: "call_1", Content: json.RawMessage(`"Sunny"`)},
-				{Role: "assistant", Content: json.RawMessage(`"The weather is sunny."`)},
-				{Role: "user", Content: json.RawMessage(`"Thanks!"`)},
-			},
-			expected: -1, // all completed, truncate everything
-		},
-		{
-			name: "multiple tool interactions - last one active",
-			messages: []message{
-				{Role: "user", Content: json.RawMessage(`"Get weather"`)},
-				{Role: "assistant", ToolCalls: json.RawMessage(`[{"id":"call_1"}]`)},
-				{Role: "tool", ToolCallID: "call_1", Content: json.RawMessage(`"Sunny"`)},
-				{Role: "assistant", Content: json.RawMessage(`"It's sunny."`)},
-				{Role: "user", Content: json.RawMessage(`"Now get stock price"`)},
-				{Role: "assistant", ToolCalls: json.RawMessage(`[{"id":"call_2"}]`)},
-				{Role: "tool", ToolCallID: "call_2", Content: json.RawMessage(`"150.00"`)},
-			},
-			expected: 5, // preserve from index 5 (second tool call)
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := findLastToolInteractionBoundaryRaw(tt.messages)
-			if result != tt.expected {
-				t.Errorf("findLastToolInteractionBoundaryRaw() = %d, expected %d", result, tt.expected)
-			}
-		})
-	}
-}
 
 func TestStoolsBefore(t *testing.T) {
 	stools := &Stools{}
@@ -209,7 +29,10 @@ func TestStoolsBefore(t *testing.T) {
 			]
 		}`)
 
-		result, err := stools.Before("", nil, nil, req)
+		result, err := stools.Before("", &services.ProviderService{
+			Style: styles.StyleOpenAIChat,
+		}, nil, req)
+
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -270,7 +93,10 @@ func TestStoolsBefore(t *testing.T) {
 			]
 		}`)
 
-		result, err := stools.Before("", nil, nil, req)
+		result, err := stools.Before("", &services.ProviderService{
+			Style: styles.StyleOpenAIChat,
+		}, nil, req)
+
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -311,7 +137,10 @@ func TestStoolsBefore(t *testing.T) {
 			]
 		}`)
 
-		result, err := stools.Before("", nil, nil, req)
+		result, err := stools.Before("", &services.ProviderService{
+			Style: styles.StyleOpenAIChat,
+		}, nil, req)
+
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
