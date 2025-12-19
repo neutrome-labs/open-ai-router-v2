@@ -9,7 +9,7 @@ import (
 // Order matters: models (fallback) should run before parallel (fan-out)
 var HeadPlugins = [][2]string{
 	{"models", ""},
-	{"parallel", ""},
+	// {"parallel", ""},
 }
 
 // TailPlugins are plugins that are always executed after others

@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/neutrome-labs/open-ai-router/src/services"
+	"github.com/neutrome-labs/open-ai-router/src/styles"
 )
 
 // ListModelsModel represents a model from a provider
@@ -23,17 +24,17 @@ type ListModelsCommand interface {
 
 // InferenceStreamChunk represents a streaming response chunk
 type InferenceStreamChunk struct {
+	Data         styles.PartialJSON
 	RuntimeError error
-	Data         []byte
 }
 
 // InferenceCommand is the unified interface for all inference APIs.
-// Each driver (OpenAI Chat, OpenAI Responses, Anthropic Messages, etc.)
+// Each driver (Chat Completions, Responses, Anthropic Messages, etc.)
 // implements this interface to handle requests in their native format.
 // The module handles format conversion at the boundary.
 type InferenceCommand interface {
 	// DoInference sends a non-streaming inference request
-	DoInference(p *services.ProviderService, reqBody []byte, r *http.Request) (*http.Response, []byte, error)
+	DoInference(p *services.ProviderService, reqJson styles.PartialJSON, r *http.Request) (*http.Response, styles.PartialJSON, error)
 	// DoInferenceStream sends a streaming inference request
-	DoInferenceStream(p *services.ProviderService, reqBody []byte, r *http.Request) (*http.Response, chan InferenceStreamChunk, error)
+	DoInferenceStream(p *services.ProviderService, reqJson styles.PartialJSON, r *http.Request) (*http.Response, chan InferenceStreamChunk, error)
 }

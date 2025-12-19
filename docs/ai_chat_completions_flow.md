@@ -1,6 +1,6 @@
-# OpenAI Chat Completions Data Flow
+# Chat Completions Data Flow
 
-This document describes how HTTP requests and responses (headers and bodies) flow through the `ai_openai_chat_completions` Caddy module.
+This document describes how HTTP requests and responses (headers and bodies) flow through the `ai_chat_completions` Caddy module.
 
 ## High-Level Architecture
 
@@ -12,7 +12,7 @@ flowchart TB
     end
     
     subgraph Caddy["Caddy Server"]
-        subgraph Module["OpenAIChatCompletionsModule"]
+        subgraph Module["ChatCompletionsModule"]
             SERVE[ServeHTTP]
             HANDLE[handleRequest]
             CHAT[serveChatCompletions]
@@ -87,7 +87,9 @@ sequenceDiagram
     
     Client->>ServeHTTP: HTTP POST /chat/completions
     Note over ServeHTTP: Read request body (io.ReadAll)
-    Note over ServeHTTP: Parse known fields (stream, model)
+    Note over ServeHTTP: ParsePartialJSON(body) -> PartialJSON
+    Note over ServeHTTP: TryGetFromPartialJSON[string](pj, "model")
+    Note over ServeHTTP: TryGetFromPartialJSON[bool](pj, "stream")
     
     ServeHTTP->>Router: GetRouter(routerName)
     Router-->>ServeHTTP: RouterModule
@@ -111,26 +113,36 @@ sequenceDiagram
     end
 ```
 
-### 2. Request Body Processing
+### 2. Request Body Processing (PartialJSON)
+
+The system uses `styles.PartialJSON` (a `map[string]json.RawMessage`) to enable lazy parsing - the body is parsed once at the top level, but nested fields like `messages` are only parsed when actually needed.
 
 ```mermaid
 flowchart LR
     subgraph "Request Body Flow"
         direction TB
         RAW["Raw HTTP Body<br/>[]byte"]
-        PARSE["Parse Known Fields<br/>stream, model"]
-        CLONE["Clone for Provider<br/>[]byte copy"]
-        BEFORE["RunBefore Plugins<br/>Modify request"]
-        CONVERT["Style Converter<br/>Format transformation"]
-        PROVIDER["Provider Request<br/>Native format"]
+        PARSE["ParsePartialJSON<br/>styles.PartialJSON"]
+        EXTRACT["TryGetFromPartialJSON<br/>stream, model"]
+        CLONE["Clone PartialJSON<br/>pj.Clone()"]
+        BEFORE["RunBefore Plugins<br/>Modify PartialJSON"]
+        CONVERT["Style Converter<br/>PartialJSON transform"]
+        PROVIDER["Provider Request<br/>PartialJSON"]
     end
     
     RAW --> PARSE
-    PARSE --> CLONE
+    PARSE --> EXTRACT
+    EXTRACT --> CLONE
     CLONE --> BEFORE
     BEFORE --> CONVERT
     CONVERT --> PROVIDER
 ```
+
+**Key Benefits of PartialJSON:**
+- Parse once at entry, avoid repeated `json.Unmarshal` calls
+- Access top-level fields (`model`, `stream`) without parsing nested content
+- Plugins can modify fields via `pj.Set(key, value)` without full round-trip
+- Clone is cheap - just copies map pointers to `json.RawMessage` slices
 
 ### 3. Provider Resolution
 
@@ -178,39 +190,41 @@ sequenceDiagram
     Handle->>Handle: ResolveProvidersOrderAndModel()
     
     loop For each provider
-        Handle->>Plugins: RunBefore(provider, request)
+        Handle->>Plugins: RunBefore(provider, reqJson PartialJSON)
         Note over Plugins: Logger, Models, Custom plugins
-        Plugins-->>Handle: Modified request body
+        Plugins-->>Handle: Modified PartialJSON
         
         Handle->>Serve: serveChatCompletions()
         
-        Serve->>Converter: ConvertRequest(body, OpenAIChat, providerStyle)
-        Note over Converter: Passthrough if same style<br/>Transform if different
-        Converter-->>Serve: Provider-format request
+        Serve->>Converter: ConvertRequest(reqJson, ChatCompletions, providerStyle)
+        Note over Converter: Passthrough if same style<br/>Transform PartialJSON if different
+        Converter-->>Serve: Provider-format PartialJSON
         
-        Serve->>Driver: DoInference(provider, body, request)
+        Serve->>Driver: DoInference(provider, reqJson, request)
         
         Driver->>Driver: createRequest()
-        Note over Driver: Clone headers<br/>Set Content-Type: application/json<br/>Set Authorization header
+        Note over Driver: reqJson.Marshal() -> []byte<br/>Clone headers<br/>Set Content-Type: application/json<br/>Set Authorization header
         
         Driver->>Provider: HTTP POST /chat/completions
         Provider-->>Driver: HTTP Response + Body
         
         alt Success (200 OK)
-            Driver-->>Serve: (response, body, nil)
+            Note over Driver: ParsePartialJSON(respBody)
+            Driver-->>Serve: (response, resJson PartialJSON, nil)
             
-            Serve->>Converter: ConvertResponse(body, providerStyle, OpenAIChat)
-            Converter-->>Serve: OpenAI-format response
+            Serve->>Converter: ConvertResponse(resJson, providerStyle, ChatCompletions)
+            Converter-->>Serve: ChatCompletions-format PartialJSON
             
-            Serve->>Plugins: RunAfter(provider, request, response)
-            Plugins-->>Serve: Modified response body
+            Serve->>Plugins: RunAfter(provider, reqJson, resJson)
+            Plugins-->>Serve: Modified PartialJSON
             
+            Note over Serve: resJson.Marshal() -> []byte
             Serve->>Writer: Write JSON response
             Note over Writer: Content-Type: application/json
             
         else Error
             Driver-->>Serve: (response, nil, error)
-            Serve->>Plugins: RunError(provider, request, error)
+            Serve->>Plugins: RunError(provider, reqJson, error)
             Note over Handle: Try next provider
         end
     end
@@ -241,12 +255,13 @@ sequenceDiagram
     Stream->>SSEWriter: WriteHeartbeat("ok")
     Note over SSEWriter: ":ok\n\n"
     
-    Stream->>Converter: ConvertRequest(body, OpenAIChat, providerStyle)
-    Converter-->>Stream: Provider-format request
+    Stream->>Converter: ConvertRequest(reqJson, ChatCompletions, providerStyle)
+    Converter-->>Stream: Provider-format PartialJSON
     
-    Stream->>Driver: DoInferenceStream(provider, body, request)
+    Stream->>Driver: DoInferenceStream(provider, reqJson, request)
     
     Driver->>Driver: createRequest()
+    Note over Driver: reqJson.Marshal() -> []byte
     Driver->>Provider: HTTP POST /chat/completions (stream=true)
     
     Provider-->>Driver: HTTP Response (streaming)
@@ -258,14 +273,15 @@ sequenceDiagram
     Driver->>SSEReader: NewDefaultReader(response.Body)
     
     loop For each SSE event
-        SSEReader->>Driver: Event{RawData, Done, Error}
+        SSEReader->>Driver: Event{Data: []byte, Done, Error}
         
         alt Done signal
             Driver->>Driver: Close channel
         else Error
             Driver->>Stream: InferenceStreamChunk{RuntimeError}
         else Data
-            Driver->>Stream: InferenceStreamChunk{Data: rawJSON}
+            Note over Driver: ParsePartialJSON(event.Data)
+            Driver->>Stream: InferenceStreamChunk{Data: PartialJSON}
         end
     end
     
@@ -274,18 +290,19 @@ sequenceDiagram
             Stream->>SSEWriter: WriteError(message)
             Stream->>Plugins: RunError()
         else Data chunk
-            Stream->>Converter: ConvertResponseChunk(chunk, providerStyle, OpenAIChat)
-            Converter-->>Stream: OpenAI-format chunk
+            Stream->>Converter: ConvertResponseChunk(chunkJson, providerStyle, ChatCompletions)
+            Converter-->>Stream: ChatCompletions-format PartialJSON
             
-            Stream->>Plugins: RunAfterChunk(chunk)
-            Plugins-->>Stream: Modified chunk
+            Stream->>Plugins: RunAfterChunk(chunkJson)
+            Plugins-->>Stream: Modified PartialJSON
             
-            Stream->>SSEWriter: WriteRaw(chunk)
+            Note over Stream: chunkJson.Marshal() -> []byte
+            Stream->>SSEWriter: WriteRaw(chunkData)
             Note over SSEWriter: "data: {...}\n\n"
         end
     end
     
-    Stream->>Plugins: RunStreamEnd(lastChunk)
+    Stream->>Plugins: RunStreamEnd(lastChunk PartialJSON)
     Stream->>SSEWriter: WriteDone()
     Note over SSEWriter: "data: [DONE]\n\n"
 ```
@@ -378,35 +395,35 @@ flowchart TB
     INFERENCE --> |Error| ERROR
 ```
 
-## Style Conversion
+## Style Conversion (with PartialJSON)
 
 ```mermaid
 flowchart LR
     subgraph "Input Style"
-        OPENAI_CHAT["OpenAI Chat<br/>/chat/completions"]
+        OPENAI_CHAT["ChatCompletions<br/>/chat/completions"]
     end
     
     subgraph "Provider Styles"
-        OPENAI["openai_chat<br/>Passthrough"]
-        RESPONSES["openai_responses<br/>Convert format"]
+        OPENAI["StyleChatCompletions<br/>Passthrough PartialJSON"]
+        RESPONSES["StyleResponses<br/>Transform PartialJSON"]
     end
     
-    subgraph "Conversion"
-        REQ_CONV[ConvertRequest]
-        RES_CONV[ConvertResponse]
-        CHUNK_CONV[ConvertResponseChunk]
+    subgraph "Conversion (services.DefaultConverter)"
+        REQ_CONV["ConvertRequest<br/>(reqJson, from, to)"]
+        RES_CONV["ConvertResponse<br/>(resJson, from, to)"]
+        CHUNK_CONV["ConvertResponseChunk<br/>(chunkJson, from, to)"]
     end
     
-    OPENAI_CHAT --> |Request| REQ_CONV
-    REQ_CONV --> OPENAI
-    REQ_CONV --> RESPONSES
+    OPENAI_CHAT --> |PartialJSON| REQ_CONV
+    REQ_CONV --> |Passthrough| OPENAI
+    REQ_CONV --> |Transform| RESPONSES
     
-    OPENAI --> |Response| RES_CONV
-    RESPONSES --> |Response| RES_CONV
+    OPENAI --> |PartialJSON| RES_CONV
+    RESPONSES --> |PartialJSON| RES_CONV
     RES_CONV --> OPENAI_CHAT
     
-    OPENAI --> |Chunk| CHUNK_CONV
-    RESPONSES --> |Chunk| CHUNK_CONV
+    OPENAI --> |PartialJSON| CHUNK_CONV
+    RESPONSES --> |PartialJSON| CHUNK_CONV
     CHUNK_CONV --> OPENAI_CHAT
 ```
 
@@ -421,7 +438,7 @@ flowchart TB
     end
     
     subgraph "Set By"
-        MODULE[OpenAIChatCompletionsModule<br/>Sets trace_id]
+        MODULE[ChatCompletionsModule<br/>Sets trace_id]
         AUTH[AuthService<br/>Sets user_id, key_id]
     end
     
@@ -473,11 +490,58 @@ flowchart TB
 | Stage | Type | Description |
 |-------|------|-------------|
 | HTTP Request Body | `[]byte` | Raw JSON bytes from client |
-| Parsed Request | `KnownOpenAIChatRequest` | Extracted stream/model fields |
-| Plugin Processing | `[]byte` | JSON bytes, modifiable |
-| Style Conversion | `[]byte` | Transformed JSON |
-| Provider Request | `[]byte` | Native provider format |
-| Provider Response | `[]byte` | Raw response bytes |
-| Stream Chunk | `drivers.InferenceStreamChunk` | `{Data: []byte, RuntimeError: error}` |
-| SSE Event | `sse.Event` | `{RawData: []byte, Done: bool, Error: error}` |
-| HTTP Response | `[]byte` / SSE stream | Final client response |
+| Parsed Request | `styles.PartialJSON` | `map[string]json.RawMessage` - lazy parsed |
+| Field Access | `TryGetFromPartialJSON[T]` | Type-safe extraction (e.g., `model`, `stream`) |
+| Plugin Processing | `styles.PartialJSON` | Modifiable via `Set()`, clonable via `Clone()` |
+| Style Conversion | `styles.PartialJSON` | Transformed between formats |
+| Provider Request | `styles.PartialJSON` | Serialized to `[]byte` at driver boundary |
+| Provider Response | `styles.PartialJSON` | Parsed from provider response |
+| Stream Chunk | `drivers.InferenceStreamChunk` | `{Data: styles.PartialJSON, RuntimeError: error}` |
+| SSE Event | `sse.Event` | `{Data: []byte, Done: bool, Error: error}` |
+| HTTP Response | `[]byte` / SSE stream | Final client response (serialized from PartialJSON) |
+
+### PartialJSON Type Details
+
+```go
+// styles/partial_json.go
+type PartialJSON map[string]json.RawMessage
+
+// Core operations
+ParsePartialJSON(data []byte) (PartialJSON, error)     // Parse raw bytes
+TryGetFromPartialJSON[T](pj, key) T                    // Type-safe field access
+pj.Set(key, value) error                               // Modify field
+pj.Clone() PartialJSON                                 // Shallow clone
+pj.Marshal() ([]byte, error)                           // Serialize back to bytes
+```
+
+### Driver Interface (with PartialJSON)
+
+```go
+// drivers/interfaces.go
+type InferenceCommand interface {
+    DoInference(p *ProviderService, reqJson styles.PartialJSON, r *http.Request) (*http.Response, styles.PartialJSON, error)
+    DoInferenceStream(p *ProviderService, reqJson styles.PartialJSON, r *http.Request) (*http.Response, chan InferenceStreamChunk, error)
+}
+
+type InferenceStreamChunk struct {
+    Data         styles.PartialJSON
+    RuntimeError error
+}
+```
+
+### Plugin Interfaces (with PartialJSON)
+
+```go
+// plugin/interfaces.go
+type BeforePlugin interface {
+    Before(params string, p *ProviderService, r *http.Request, reqJson styles.PartialJSON) (styles.PartialJSON, error)
+}
+
+type AfterPlugin interface {
+    After(params string, p *ProviderService, r *http.Request, reqJson styles.PartialJSON, res *http.Response, resJson styles.PartialJSON) (styles.PartialJSON, error)
+}
+
+type StreamChunkPlugin interface {
+    AfterChunk(params string, p *ProviderService, r *http.Request, reqJson styles.PartialJSON, res *http.Response, chunk styles.PartialJSON) (styles.PartialJSON, error)
+}
+```

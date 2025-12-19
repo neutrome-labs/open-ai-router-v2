@@ -17,7 +17,7 @@ import (
 )
 
 // Logger for virtual driver - can be set by modules
-var Logger *zap.Logger
+var Logger *zap.Logger = zap.NewNop()
 
 // VirtualPlugin implements RecursiveHandlerPlugin for virtual providers.
 // It intercepts requests for virtual models and redirects them to real providers.
@@ -76,12 +76,10 @@ func (v *VirtualPlugin) RecursiveHandler(
 		return false, nil // Model not in our mappings, let normal flow handle it
 	}
 
-	if Logger != nil {
-		Logger.Debug("VirtualPlugin handling request",
-			zap.String("provider", v.ProviderName),
-			zap.String("virtual_model", actualModel),
-			zap.String("target_model", targetModel))
-	}
+	Logger.Debug("VirtualPlugin handling request",
+		zap.String("provider", v.ProviderName),
+		zap.String("virtual_model", actualModel),
+		zap.String("target_model", targetModel))
 
 	// Rewrite model in request to the target
 	reqMap["model"], err = json.Marshal(targetModel)
@@ -103,17 +101,13 @@ func (v *VirtualPlugin) RecursiveHandler(
 	// Invoke the handler - this will write directly to w for streaming
 	err = invoker.InvokeHandler(w, newReq)
 	if err != nil {
-		if Logger != nil {
-			Logger.Error("VirtualPlugin target failed",
-				zap.String("target", targetModel),
-				zap.Error(err))
-		}
+		Logger.Error("VirtualPlugin target failed",
+			zap.String("target", targetModel),
+			zap.Error(err))
 		return true, err
 	}
 
-	if Logger != nil {
-		Logger.Debug("VirtualPlugin succeeded", zap.String("target", targetModel))
-	}
+	Logger.Debug("VirtualPlugin succeeded", zap.String("target", targetModel))
 	return true, nil
 }
 
@@ -128,9 +122,7 @@ type VirtualListModels struct {
 
 // DoListModels returns the list of virtual models.
 func (v *VirtualListModels) DoListModels(p *services.ProviderService, r *http.Request) ([]drivers.ListModelsModel, error) {
-	if Logger != nil {
-		Logger.Debug("VirtualListModels.DoListModels", zap.String("provider", p.Name))
-	}
+	Logger.Debug("VirtualListModels.DoListModels", zap.String("provider", p.Name))
 
 	var models []drivers.ListModelsModel
 	for modelName := range v.ModelMappings {

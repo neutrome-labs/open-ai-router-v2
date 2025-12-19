@@ -49,7 +49,7 @@ func TestParseModelList(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := ParseModelList(tt.input)
+			result, _ := parseModelListForFallback(tt.input)
 			if len(result) != len(tt.expected) {
 				t.Errorf("ParseModelList(%q) = %v, want %v", tt.input, result, tt.expected)
 				return

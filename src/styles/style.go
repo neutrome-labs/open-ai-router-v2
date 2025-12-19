@@ -11,7 +11,7 @@ import (
 )
 
 // Logger for debug output (set by module during Provision)
-var Logger *zap.Logger
+var Logger *zap.Logger = zap.NewNop()
 
 // Style represents a provider's API style
 type Style string
@@ -19,8 +19,8 @@ type Style string
 const (
 	StyleUnknown         Style = ""
 	StyleVirtual         Style = "virtual"
-	StyleOpenAIChat      Style = "openai-chat-completions"
-	StyleOpenAIResponses Style = "openai-responses"
+	StyleChatCompletions Style = "openai-chat-completions"
+	StyleResponses       Style = "openai-responses"
 	StyleAnthropic       Style = "anthropic-messages"
 	StyleGoogleGenAI     Style = "google-genai"
 	StyleCfAiGateway     Style = "cloudflare-ai-gateway"
@@ -33,9 +33,9 @@ func ParseStyle(s string) (Style, error) {
 	case "virtual":
 		return StyleVirtual, nil
 	case "openai-chat-completions", "openai", "":
-		return StyleOpenAIChat, nil
+		return StyleChatCompletions, nil
 	case "openai-responses", "responses":
-		return StyleOpenAIResponses, nil
+		return StyleResponses, nil
 	/*case "anthropic-messages", "anthropic":
 		return StyleAnthropic, nil
 	case "google-genai", "google":

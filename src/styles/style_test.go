@@ -9,11 +9,11 @@ func TestParseStyle(t *testing.T) {
 		input    string
 		expected Style
 	}{
-		{"openai-chat-completions", StyleOpenAIChat},
-		{"openai", StyleOpenAIChat},
-		{"", StyleOpenAIChat},
-		{"openai-responses", StyleOpenAIResponses},
-		{"responses", StyleOpenAIResponses},
+		{"openai-chat-completions", StyleChatCompletions},
+		{"openai", StyleChatCompletions},
+		{"", StyleChatCompletions},
+		{"openai-responses", StyleResponses},
+		{"responses", StyleResponses},
 		{"anthropic-messages", StyleUnknown},
 		{"anthropic", StyleUnknown},
 		{"google-genai", StyleUnknown},

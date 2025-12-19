@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -17,21 +16,17 @@ import (
 	"github.com/neutrome-labs/open-ai-router/src/modules"
 	"github.com/neutrome-labs/open-ai-router/src/plugin"
 	"github.com/neutrome-labs/open-ai-router/src/plugins"
+	"github.com/neutrome-labs/open-ai-router/src/services"
 	"github.com/neutrome-labs/open-ai-router/src/sse"
 	"github.com/neutrome-labs/open-ai-router/src/styles"
 	"go.uber.org/zap"
 )
 
-// OpenAIChatCompletionsModule handles OpenAI-style chat completions requests.
+// ChatCompletionsModule handles OpenAI-style chat completions requests.
 // V3 upgrade: Supports passthrough when input/output styles match, minimizes serialization.
-type OpenAIChatCompletionsModule struct {
+type ChatCompletionsModule struct {
 	RouterName string `json:"router,omitempty"`
 	logger     *zap.Logger
-}
-
-type KnownOpenAIChatRequest struct {
-	Stream bool   `json:"stream"`
-	Model  string `json:"model"`
 }
 
 // responseCaptureWriter captures response instead of writing to HTTP
@@ -58,7 +53,7 @@ func (w *responseCaptureWriter) WriteHeader(statusCode int) {
 
 // chatCompletionsInvoker implements plugins.HandlerInvoker for recursive handler calls.
 type chatCompletionsInvoker struct {
-	module *OpenAIChatCompletionsModule
+	module *ChatCompletionsModule
 	router *modules.RouterModule
 }
 
@@ -68,7 +63,7 @@ func (inv *chatCompletionsInvoker) InvokeHandler(w http.ResponseWriter, r *http.
 }
 
 // InvokeHandlerCapture invokes the handler and captures the response instead of writing to w.
-func (inv *chatCompletionsInvoker) InvokeHandlerCapture(r *http.Request) ([]byte, error) {
+func (inv *chatCompletionsInvoker) InvokeHandlerCapture(r *http.Request) (styles.PartialJSON, error) {
 	// Create a response capture writer
 	capture := &responseCaptureWriter{}
 	err := inv.module.ServeHTTP(capture, r, nil)
@@ -78,11 +73,11 @@ func (inv *chatCompletionsInvoker) InvokeHandlerCapture(r *http.Request) ([]byte
 	if capture.response == nil {
 		return nil, nil
 	}
-	return capture.response, nil
+	return styles.ParsePartialJSON(capture.response)
 }
 
-func ParseOpenAIChatCompletionsModule(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
-	var m OpenAIChatCompletionsModule
+func ParseChatCompletionsModule(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
+	var m ChatCompletionsModule
 	for h.Next() {
 		for h.NextBlock(0) {
 			switch h.Val() {
@@ -99,80 +94,87 @@ func ParseOpenAIChatCompletionsModule(h httpcaddyfile.Helper) (caddyhttp.Middlew
 	return &m, nil
 }
 
-func (*OpenAIChatCompletionsModule) CaddyModule() caddy.ModuleInfo {
+func (*ChatCompletionsModule) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
 		ID:  "http.handlers.ai_openai_chat_completions",
-		New: func() caddy.Module { return new(OpenAIChatCompletionsModule) },
+		New: func() caddy.Module { return new(ChatCompletionsModule) },
 	}
 }
 
-func (m *OpenAIChatCompletionsModule) Provision(ctx caddy.Context) error {
+func (m *ChatCompletionsModule) Provision(ctx caddy.Context) error {
 	m.logger = ctx.Logger(m)
 
 	// Provision package-level loggers for all subsystems
 	plugin.Logger = m.logger.Named("plugin")
 	plugins.Logger = m.logger.Named("plugins")
+	styles.Logger = m.logger.Named("styles")
 	openai.Logger = m.logger.Named("openai")
 	virtual.Logger = m.logger.Named("virtual")
-	styles.Logger = m.logger.Named("styles")
 
 	return nil
 }
 
-func (m *OpenAIChatCompletionsModule) serveChatCompletions(
+func (m *ChatCompletionsModule) serveChatCompletions(
 	p *modules.ProviderConfig,
 	cmd drivers.InferenceCommand,
 	chain *plugin.PluginChain,
-	reqBody []byte,
+	reqJson styles.PartialJSON,
 	w http.ResponseWriter,
 	r *http.Request,
 ) error {
-	inputStyle := styles.StyleOpenAIChat
+	inputStyle := styles.StyleChatCompletions
 	outputStyle := p.Impl.Style
 
 	// Convert request format (passthrough if same style)
-	converter := &styles.DefaultConverter{}
-	providerReq, err := converter.ConvertRequest(reqBody, inputStyle, outputStyle)
+	converter := &services.DefaultConverter{}
+	providerReq, err := converter.ConvertRequest(reqJson, inputStyle, outputStyle)
 	if err != nil {
 		m.logger.Error("Failed to convert request format", zap.Error(err))
 		http.Error(w, "Format conversion error", http.StatusInternalServerError)
 		return nil
 	}
 
-	res, resBody, err := cmd.DoInference(&p.Impl, providerReq, r)
+	res, resJson, err := cmd.DoInference(&p.Impl, providerReq, r)
 	if err != nil {
 		m.logger.Error("inference error", zap.String("provider", p.Name), zap.Error(err))
 		// Run error plugins to notify about the failure
-		_ = chain.RunError(&p.Impl, r, reqBody, res, err)
+		_ = chain.RunError(&p.Impl, r, reqJson, res, err)
 		return err
 	}
 
 	// Convert response back to input style (passthrough if same style)
-	if resBody != nil {
-		resBody, err = converter.ConvertResponse(resBody, outputStyle, inputStyle)
+	if resJson != nil {
+		resJson, err = converter.ConvertResponse(resJson, outputStyle, inputStyle)
 		if err != nil {
 			m.logger.Error("Failed to convert response format", zap.Error(err))
 		}
 	}
 
 	// Run after plugins
-	resBody, err = chain.RunAfter(&p.Impl, r, reqBody, res, resBody)
+	resJson, err = chain.RunAfter(&p.Impl, r, reqJson, res, resJson)
 	if err != nil {
 		m.logger.Error("plugin after hook error", zap.Error(err))
 		http.Error(w, "Plugin error", http.StatusInternalServerError)
 		return nil
 	}
 
+	resData, err := resJson.Marshal()
+	if err != nil {
+		m.logger.Error("Failed to serialize response JSON", zap.Error(err))
+		http.Error(w, "Response serialization error", http.StatusInternalServerError)
+		return nil
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	_, err = w.Write(resBody)
+	_, err = w.Write(resData)
 	return err
 }
 
-func (m *OpenAIChatCompletionsModule) serveChatCompletionsStream(
+func (m *ChatCompletionsModule) serveChatCompletionsStream(
 	p *modules.ProviderConfig,
 	cmd drivers.InferenceCommand,
 	chain *plugin.PluginChain,
-	reqBody []byte,
+	reqJson styles.PartialJSON,
 	w http.ResponseWriter,
 	r *http.Request,
 ) error {
@@ -182,12 +184,12 @@ func (m *OpenAIChatCompletionsModule) serveChatCompletionsStream(
 		return err
 	}
 
-	inputStyle := styles.StyleOpenAIChat
+	inputStyle := styles.StyleChatCompletions
 	outputStyle := p.Impl.Style
 
 	// Convert request format (passthrough if same style)
-	converter := &styles.DefaultConverter{}
-	providerReq, err := converter.ConvertRequest(reqBody, inputStyle, outputStyle)
+	converter := &services.DefaultConverter{}
+	providerReq, err := converter.ConvertRequest(reqJson, inputStyle, outputStyle)
 	if err != nil {
 		m.logger.Error("Failed to convert request format", zap.Error(err))
 		_ = sseWriter.WriteError("Format conversion error")
@@ -199,42 +201,49 @@ func (m *OpenAIChatCompletionsModule) serveChatCompletionsStream(
 	if err != nil {
 		m.logger.Error("inference stream error (start)", zap.String("provider", p.Name), zap.Error(err))
 		// Run error plugins to notify about the failure
-		_ = chain.RunError(&p.Impl, r, reqBody, hres, err)
+		_ = chain.RunError(&p.Impl, r, reqJson, hres, err)
 		_ = sseWriter.WriteError("start failed")
 		_ = sseWriter.WriteDone()
 		return err
 	}
 
-	var lastChunk []byte
+	var lastChunk styles.PartialJSON
 
 	for chunk := range stream {
 		if chunk.RuntimeError != nil {
 			_ = sseWriter.WriteError(chunk.RuntimeError.Error())
 			// Run error plugins for runtime stream errors
-			_ = chain.RunError(&p.Impl, r, reqBody, hres, chunk.RuntimeError)
+			_ = chain.RunError(&p.Impl, r, reqJson, hres, chunk.RuntimeError)
 			return nil
 		}
 
-		chunkData := chunk.Data
+		chunkJson := chunk.Data
 
 		// Convert chunk (passthrough if same style)
-		if chunkData != nil {
-			converted, err := converter.ConvertResponseChunk(chunkData, outputStyle, inputStyle)
+		if chunkJson != nil {
+			converted, err := converter.ConvertResponseChunk(chunkJson, outputStyle, inputStyle)
 			if err == nil {
-				chunkData = converted
+				chunkJson = converted
 			}
 		}
 
 		// Run after-chunk plugins
-		chunkData, err = chain.RunAfterChunk(&p.Impl, r, reqBody, hres, chunkData)
+		chunkJson, err = chain.RunAfterChunk(&p.Impl, r, reqJson, hres, chunkJson)
 		if err != nil {
 			m.logger.Error("plugin after chunk error", zap.Error(err))
 			continue
 		}
 
-		if chunkData != nil {
-			lastChunk = chunkData
-			if err := sseWriter.WriteRaw(chunkData); err != nil {
+		if chunkJson != nil {
+			lastChunk = chunkJson
+
+			chankData, err := chunkJson.Marshal()
+			if err != nil {
+				m.logger.Error("chat completions stream chunk marshal error", zap.Error(err))
+				continue
+			}
+
+			if err := sseWriter.WriteRaw(chankData); err != nil {
 				m.logger.Error("chat completions stream write error", zap.Error(err))
 				return err
 			}
@@ -242,13 +251,13 @@ func (m *OpenAIChatCompletionsModule) serveChatCompletionsStream(
 	}
 
 	// Run stream end plugins
-	_ = chain.RunStreamEnd(&p.Impl, r, reqBody, hres, lastChunk)
+	_ = chain.RunStreamEnd(&p.Impl, r, reqJson, hres, lastChunk)
 
 	_ = sseWriter.WriteDone()
 	return nil
 }
 
-func (m *OpenAIChatCompletionsModule) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
+func (m *ChatCompletionsModule) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	m.logger.Debug("Chat completions request received", zap.String("path", r.URL.Path), zap.String("method", r.Method))
 
 	reqBody, err := io.ReadAll(r.Body)
@@ -260,16 +269,16 @@ func (m *OpenAIChatCompletionsModule) ServeHTTP(w http.ResponseWriter, r *http.R
 
 	m.logger.Debug("Request body read", zap.Int("body_length", len(reqBody)))
 
-	knownReq := &KnownOpenAIChatRequest{}
-	if err := json.Unmarshal(reqBody, knownReq); err != nil {
-		m.logger.Error("failed to parse known request fields", zap.Error(err))
-		http.Error(w, "failed to parse request body", http.StatusBadRequest)
+	reqJson, err := styles.ParsePartialJSON(reqBody)
+	if err != nil {
+		m.logger.Error("failed to parse request JSON", zap.Error(err))
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return nil
 	}
 
 	m.logger.Debug("Request parsed",
-		zap.String("model", knownReq.Model),
-		zap.Bool("streaming", knownReq.Stream))
+		zap.String("model", styles.TryGetFromPartialJSON[string](reqJson, "model")),
+		zap.Bool("streaming", styles.TryGetFromPartialJSON[bool](reqJson, "stream")))
 
 	router, ok := modules.GetRouter(m.RouterName)
 	if !ok {
@@ -286,7 +295,7 @@ func (m *OpenAIChatCompletionsModule) ServeHTTP(w http.ResponseWriter, r *http.R
 		return nil
 	}
 
-	chain := plugin.TryResolvePlugins(*r.URL, knownReq.Model)
+	chain := plugin.TryResolvePlugins(*r.URL, styles.TryGetFromPartialJSON[string](reqJson, "model"))
 
 	m.logger.Debug("Resolved plugins", zap.Int("plugin_count", len(chain.GetPlugins())))
 
@@ -300,7 +309,7 @@ func (m *OpenAIChatCompletionsModule) ServeHTTP(w http.ResponseWriter, r *http.R
 	}
 
 	// Check if any recursive handler plugin wants to handle this request
-	handled, err := chain.RunRecursiveHandlers(invoker, reqBody, w, r)
+	handled, err := chain.RunRecursiveHandlers(invoker, reqJson, w, r)
 	if handled {
 		if err != nil {
 			m.logger.Error("recursive handler plugin failed", zap.Error(err))
@@ -310,7 +319,7 @@ func (m *OpenAIChatCompletionsModule) ServeHTTP(w http.ResponseWriter, r *http.R
 	}
 
 	// Normal flow - handle request directly
-	err = m.handleRequest(router, chain, reqBody, *knownReq, w, r)
+	err = m.handleRequest(router, chain, reqJson, w, r)
 	if err != nil {
 		m.logger.Error("request handling failed", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -321,15 +330,14 @@ func (m *OpenAIChatCompletionsModule) ServeHTTP(w http.ResponseWriter, r *http.R
 }
 
 // handleRequest handles a single request to providers (used both directly and by recursive plugins).
-func (m *OpenAIChatCompletionsModule) handleRequest(
+func (m *ChatCompletionsModule) handleRequest(
 	router *modules.RouterModule,
 	chain *plugin.PluginChain,
-	reqBody []byte,
-	knownReq KnownOpenAIChatRequest,
+	reqJson styles.PartialJSON,
 	w http.ResponseWriter,
 	r *http.Request,
 ) error {
-	providers, model := router.ResolveProvidersOrderAndModel(knownReq.Model)
+	providers, model := router.ResolveProvidersOrderAndModel(styles.TryGetFromPartialJSON[string](reqJson, "model"))
 
 	m.logger.Debug("Resolved providers",
 		zap.String("model", model),
@@ -352,9 +360,9 @@ func (m *OpenAIChatCompletionsModule) handleRequest(
 			continue
 		}
 
-		providerReq, err := m.copyRequestWithModel(reqBody, model)
+		providerReq, err := reqJson.CloneWith("model", model)
 		if err != nil {
-			m.logger.Error("failed to copy request with model", zap.String("provider", name), zap.Error(err))
+			m.logger.Error("failed to clone request JSON with new model", zap.Error(err))
 			continue
 		}
 
@@ -372,20 +380,7 @@ func (m *OpenAIChatCompletionsModule) handleRequest(
 		m.logger.Debug("Executing inference",
 			zap.String("provider", name),
 			zap.String("style", string(p.Impl.Style)),
-			zap.Bool("streaming", knownReq.Stream))
-
-		if knownReq.Stream {
-			err = m.serveChatCompletionsStream(p, cmd, chain, providerReq, w, r)
-		} else {
-			err = m.serveChatCompletions(p, cmd, chain, providerReq, w, r)
-		}
-
-		if err != nil {
-			if displayErr == nil {
-				displayErr = err
-			}
-			continue
-		}
+			zap.Bool("streaming", styles.TryGetFromPartialJSON[bool](providerReq, "stream")))
 
 		// Success - set response headers
 		w.Header().Set("X-Real-Provider-Id", name)
@@ -402,6 +397,19 @@ func (m *OpenAIChatCompletionsModule) handleRequest(
 		}
 		w.Header().Set("X-Plugins-Executed", strings.Join(pluginNames, ","))
 
+		if styles.TryGetFromPartialJSON[bool](providerReq, "stream") {
+			err = m.serveChatCompletionsStream(p, cmd, chain, providerReq, w, r)
+		} else {
+			err = m.serveChatCompletions(p, cmd, chain, providerReq, w, r)
+		}
+
+		if err != nil {
+			if displayErr == nil {
+				displayErr = err
+			}
+			continue
+		}
+
 		return nil
 	}
 
@@ -412,27 +420,7 @@ func (m *OpenAIChatCompletionsModule) handleRequest(
 	return nil
 }
 
-func (m *OpenAIChatCompletionsModule) copyRequestWithModel(reqBody []byte, model string) ([]byte, error) {
-	var clonedJson map[string]json.RawMessage
-	if err := json.Unmarshal(reqBody, &clonedJson); err != nil {
-		return nil, err
-	}
-
-	modelJSON, err := json.Marshal(model)
-	if err != nil {
-		return nil, err
-	}
-	clonedJson["model"] = modelJSON
-
-	result, err := json.Marshal(clonedJson)
-	if err != nil {
-		return nil, err
-	}
-
-	return result, nil
-}
-
 var (
-	_ caddy.Provisioner           = (*OpenAIChatCompletionsModule)(nil)
-	_ caddyhttp.MiddlewareHandler = (*OpenAIChatCompletionsModule)(nil)
+	_ caddy.Provisioner           = (*ChatCompletionsModule)(nil)
+	_ caddyhttp.MiddlewareHandler = (*ChatCompletionsModule)(nil)
 )

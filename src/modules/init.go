@@ -16,9 +16,9 @@ func init() {
 
 	plugin.RegisterPlugin("posthog", &plugins.Posthog{})
 	plugin.RegisterPlugin("models", &plugins.Models{})
-	plugin.RegisterPlugin("parallel", &plugins.Parallel{})
+	// plugin.RegisterPlugin("parallel", &plugins.Parallel{})
 	plugin.RegisterPlugin("fuzz", &plugins.Fuzz{})
-	plugin.RegisterPlugin("stools", &plugins.Stools{})
+	// plugin.RegisterPlugin("stools", &plugins.Stools{})
 
 	defer func() {
 		_ = services.FireObservabilityEvent("app", "", "init", map[string]any{

@@ -7,11 +7,12 @@ import (
 	"net/http"
 
 	"github.com/neutrome-labs/open-ai-router/src/services"
+	"github.com/neutrome-labs/open-ai-router/src/styles"
 	"go.uber.org/zap"
 )
 
 // Logger for plugin chain - can be set by modules
-var Logger *zap.Logger
+var Logger *zap.Logger = zap.NewNop()
 
 // Context keys
 type contextKey string
@@ -48,7 +49,7 @@ type HandlerInvoker interface {
 	// InvokeHandlerCapture invokes the handler and captures the response instead of writing to w.
 	// Used by parallel plugin to capture multiple responses for merging.
 	// Returns the captured response on success, or error on failure.
-	InvokeHandlerCapture(r *http.Request) ([]byte, error)
+	InvokeHandlerCapture(r *http.Request) (styles.PartialJSON, error)
 }
 
 // BeforePlugin processes requests before sending to provider
@@ -56,21 +57,21 @@ type BeforePlugin interface {
 	Plugin
 	// Before is called before the request is sent to the provider
 	// Returns the modified request body
-	Before(params string, p *services.ProviderService, r *http.Request, reqBody []byte) ([]byte, error)
+	Before(params string, p *services.ProviderService, r *http.Request, reqJson styles.PartialJSON) (styles.PartialJSON, error)
 }
 
 // AfterPlugin processes non-streaming responses
 type AfterPlugin interface {
 	Plugin
 	// After is called after receiving a complete (non-streaming) response
-	After(params string, p *services.ProviderService, r *http.Request, reqBody []byte, res *http.Response, resBody []byte) ([]byte, error)
+	After(params string, p *services.ProviderService, r *http.Request, reqJson styles.PartialJSON, res *http.Response, resJson styles.PartialJSON) (styles.PartialJSON, error)
 }
 
 // StreamChunkPlugin processes individual streaming chunks
 type StreamChunkPlugin interface {
 	Plugin
 	// AfterChunk is called for each streaming chunk
-	AfterChunk(params string, p *services.ProviderService, r *http.Request, reqBody []byte, res *http.Response, chunk []byte) ([]byte, error)
+	AfterChunk(params string, p *services.ProviderService, r *http.Request, reqJson styles.PartialJSON, res *http.Response, chunk styles.PartialJSON) (styles.PartialJSON, error)
 }
 
 // StreamEndPlugin handles stream completion, useful for finalization when no usage data in stream
@@ -79,7 +80,7 @@ type StreamEndPlugin interface {
 	// StreamEnd is called when the stream completes
 	// lastChunk may be nil if no chunks were received or the last chunk had no usage
 	// This allows plugins to finalize state, compute estimated usage, etc.
-	StreamEnd(params string, p *services.ProviderService, r *http.Request, reqBody []byte, res *http.Response, lastChunk []byte) error
+	StreamEnd(params string, p *services.ProviderService, r *http.Request, reqJson styles.PartialJSON, res *http.Response, lastChunk styles.PartialJSON) error
 }
 
 // ErrorPlugin handles errors from provider calls
@@ -88,7 +89,7 @@ type ErrorPlugin interface {
 	// OnError is called when a provider call fails
 	// res may be nil if the error occurred before receiving a response
 	// providerErr is the error returned by the provider
-	OnError(params string, p *services.ProviderService, r *http.Request, reqBody []byte, res *http.Response, providerErr error) error
+	OnError(params string, p *services.ProviderService, r *http.Request, reqJson styles.PartialJSON, res *http.Response, providerErr error) error
 }
 
 // RecursiveHandlerPlugin can intercept the request flow and invoke the handler recursively.
@@ -102,7 +103,7 @@ type RecursiveHandlerPlugin interface {
 	RecursiveHandler(
 		params string,
 		invoker HandlerInvoker,
-		reqBody []byte,
+		reqJson styles.PartialJSON,
 		w http.ResponseWriter,
 		r *http.Request,
 	) (handled bool, err error)

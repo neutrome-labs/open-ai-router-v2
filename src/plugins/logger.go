@@ -5,4 +5,4 @@ import (
 )
 
 // Logger for plugin chain - can be set by modules
-var Logger *zap.Logger
+var Logger *zap.Logger = zap.NewNop()

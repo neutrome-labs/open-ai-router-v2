@@ -143,18 +143,32 @@ type ChatCompletionsResponse struct {
 // ================================================================================
 
 // ParseChatCompletionsRequest parses a request body into ChatCompletionsRequest
-func ParseChatCompletionsRequest(reqBody []byte) (*ChatCompletionsRequest, error) {
+func ParseChatCompletionsRequest(reqJson PartialJSON) (*ChatCompletionsRequest, error) {
 	var req ChatCompletionsRequest
-	if err := json.Unmarshal(reqBody, &req); err != nil {
+
+	// todo rework utilizing partially parsed
+	reqData, err := reqJson.Marshal()
+	if err != nil {
+		return nil, err
+	}
+
+	if err := json.Unmarshal(reqData, &req); err != nil {
 		return nil, err
 	}
 	return &req, nil
 }
 
 // ParseChatCompletionsResponse parses a response body into ChatCompletionsResponse
-func ParseChatCompletionsResponse(resBody []byte) (*ChatCompletionsResponse, error) {
+func ParseChatCompletionsResponse(resJson PartialJSON) (*ChatCompletionsResponse, error) {
 	var res ChatCompletionsResponse
-	if err := json.Unmarshal(resBody, &res); err != nil {
+
+	// todo rework utilizing partially parsed
+	resData, err := resJson.Marshal()
+	if err != nil {
+		return nil, err
+	}
+
+	if err := json.Unmarshal(resData, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil

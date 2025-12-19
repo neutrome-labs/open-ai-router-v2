@@ -4,17 +4,15 @@ package sse
 import (
 	"bufio"
 	"bytes"
-	"encoding/json"
 	"io"
 	"strings"
 )
 
 // Event represents a single SSE event
 type Event struct {
-	Data    map[string]any
-	RawData []byte // Raw JSON bytes for passthrough
-	Error   error
-	Done    bool
+	Data  []byte // Raw JSON bytes for passthrough
+	Error error
+	Done  bool
 }
 
 // Reader provides a streaming SSE parser
@@ -106,11 +104,5 @@ func (r *Reader) parseEvent(payload string) Event {
 	if payload == "[DONE]" {
 		return Event{Done: true}
 	}
-
-	rawBytes := []byte(payload)
-	var data map[string]any
-	if err := json.Unmarshal(rawBytes, &data); err != nil {
-		return Event{Error: err}
-	}
-	return Event{Data: data, RawData: rawBytes}
+	return Event{Data: []byte(payload)}
 }

@@ -1,12 +1,12 @@
 package plugins
 
 import (
-	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
 
 	"github.com/neutrome-labs/open-ai-router/src/plugin"
+	"github.com/neutrome-labs/open-ai-router/src/styles"
 	"go.uber.org/zap"
 )
 
@@ -31,16 +31,11 @@ type knownModelField struct {
 func (m *Models) RecursiveHandler(
 	params string,
 	invoker plugin.HandlerInvoker,
-	reqBody []byte,
+	reqJson styles.PartialJSON,
 	w http.ResponseWriter,
 	r *http.Request,
 ) (handled bool, err error) {
-	// Extract model from request
-	var known knownModelField
-	if err := json.Unmarshal(reqBody, &known); err != nil {
-		return false, nil // Can't parse, let normal flow handle
-	}
-	model := known.Model
+	model := styles.TryGetFromPartialJSON[string](reqJson, "model")
 
 	// Parse comma-separated models (strip plugin suffix first)
 	models, pluginSuffix := parseModelListForFallback(model)
@@ -49,67 +44,51 @@ func (m *Models) RecursiveHandler(
 		return false, nil
 	}
 
-	if Logger != nil {
-		Logger.Debug("models plugin starting fallback chain",
-			zap.Strings("models", models),
-			zap.String("plugin_suffix", pluginSuffix))
-	}
+	Logger.Debug("models plugin starting fallback chain",
+		zap.Strings("models", models),
+		zap.String("plugin_suffix", pluginSuffix))
 
 	var lastErr error
 	for i, currentModel := range models {
-		if Logger != nil {
-			Logger.Debug("models plugin trying model (all providers)",
-				zap.Int("index", i),
-				zap.String("model", currentModel))
+		Logger.Debug("models plugin trying model (all providers)",
+			zap.Int("index", i),
+			zap.String("model", currentModel))
+
+		clonedJson, err := reqJson.CloneWith("model", currentModel+pluginSuffix)
+		if err != nil {
+			Logger.Error("models plugin: failed to clone request JSON",
+				zap.String("model", currentModel),
+				zap.Error(err))
+			lastErr = err
+			continue
 		}
 
+		result, err := clonedJson.Marshal()
+
 		// Clone request and set current model (WITHOUT plugin suffix to avoid re-parsing)
-		clonedReq := cloneAndSetModel(reqBody, currentModel, r)
+		clonedReq := r.Clone(r.Context())
+		clonedReq.Body = io.NopCloser(strings.NewReader(string(result)))
 
 		// Invoke the handler with the single model
 		// This will try ALL providers for this model
-		err := invoker.InvokeHandler(w, clonedReq)
+		err = invoker.InvokeHandler(w, clonedReq)
 		if err == nil {
 			// Success - one of the providers worked!
 			return true, nil
 		}
 
 		lastErr = err
-		if Logger != nil {
-			Logger.Debug("models plugin: all providers failed for model, trying next model",
-				zap.String("model", currentModel),
-				zap.Error(err))
-		}
+		Logger.Debug("models plugin: all providers failed for model, trying next model",
+			zap.String("model", currentModel),
+			zap.Error(err))
 	}
 
 	// All models (and all their providers) failed
-	if Logger != nil {
-		Logger.Error("models plugin: all models exhausted",
-			zap.Strings("models", models),
-			zap.Error(lastErr))
-	}
+	Logger.Error("models plugin: all models exhausted",
+		zap.Strings("models", models),
+		zap.Error(lastErr))
 
 	return true, lastErr
-}
-
-// cloneAndSetModel creates a copy of the request with a new model
-func cloneAndSetModel(reqBody []byte, model string, r *http.Request) *http.Request {
-	var data map[string]json.RawMessage
-	if err := json.Unmarshal(reqBody, &data); err != nil {
-		return r // Return original on error
-	}
-
-	modelJSON, _ := json.Marshal(model)
-	data["model"] = modelJSON
-
-	result, err := json.Marshal(data)
-	if err != nil {
-		return r
-	}
-
-	clone := r.Clone(r.Context())
-	clone.Body = io.NopCloser(strings.NewReader(string(result)))
-	return clone
 }
 
 // parseModelListForFallback parses a comma-separated model string into a list.
@@ -141,11 +120,4 @@ func parseModelListForFallback(model string) ([]string, string) {
 	}
 
 	return models, pluginSuffix
-}
-
-// ParseModelList is exported for other packages that need to detect comma-separated models.
-// Returns true if the model string contains comma-separated models.
-func ParseModelList(model string) []string {
-	models, _ := parseModelListForFallback(model)
-	return models
 }

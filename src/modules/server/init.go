@@ -11,7 +11,7 @@ func init() {
 	httpcaddyfile.RegisterHandlerDirective("ai_list_models", ParseListModelsModule)
 	httpcaddyfile.RegisterDirectiveOrder("ai_list_models", httpcaddyfile.Before, "header")
 
-	caddy.RegisterModule(&OpenAIChatCompletionsModule{})
-	httpcaddyfile.RegisterHandlerDirective("ai_openai_chat_completions", ParseOpenAIChatCompletionsModule)
-	httpcaddyfile.RegisterDirectiveOrder("ai_openai_chat_completions", httpcaddyfile.Before, "header")
+	caddy.RegisterModule(&ChatCompletionsModule{})
+	httpcaddyfile.RegisterHandlerDirective("ai_chat_completions", ParseChatCompletionsModule)
+	httpcaddyfile.RegisterDirectiveOrder("ai_chat_completions", httpcaddyfile.Before, "header")
 }

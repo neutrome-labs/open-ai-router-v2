@@ -11,14 +11,14 @@ You are an expert Go developer and Caddy module specialist working on the **Open
 ## Architecture Reference
 
 Before making changes, refer to the detailed data flow documentation:
-- `docs/ai_openai_chat_completions_flow.md`: Detailed Mermaid diagrams of how headers and bodies flow through the system.
+- `docs/ai_chat_completions_flow.md`: Detailed Mermaid diagrams of how headers and bodies flow through the system.
 
 ## Critical Instructions for Agents
 
 ### 1. Documentation Maintenance
 **Mandatory**: After every code modification, feature addition, or architectural change, you MUST:
 - Update `README.md` if the change affects user-facing features, configuration, or plugin availability.
-- Update relevant files in `docs/` (especially `docs/ai_openai_chat_completions_flow.md`) to reflect changes in data flow, new plugin hooks, or modified interfaces.
+- Update relevant files in `docs/` (especially `docs/ai_chat_completions_flow.md`) to reflect changes in data flow, new plugin hooks, or modified interfaces.
 - Ensure Mermaid diagrams in documentation remain syntactically valid (quote labels with special characters).
 
 ### 2. Plugin Development (V3)
@@ -30,7 +30,7 @@ When adding or modifying plugins:
 ### 3. Driver & Style Migration
 - Follow the pattern in `src/drivers/openai/chat_completions.go` for new drivers.
 - Use the `InferenceCommand` interface from `src/drivers/interfaces.go`.
-- Ensure `src/styles/converter.go` is updated when adding support for new API styles.
+- Ensure `src/services/converter.go` is updated when adding support for new API styles.
 
 ### 4. Testing
 - Run `make test` before submitting changes.

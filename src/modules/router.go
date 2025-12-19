@@ -213,12 +213,12 @@ func (m *RouterModule) Provision(ctx caddy.Context) error {
 		// Initialize commands based on style
 		var providerCommands map[string]any
 		switch providerStyle {
-		case styles.StyleOpenAIChat: // OpenAI-compatible (chat completions)
+		case styles.StyleChatCompletions: // OpenAI-compatible (chat completions)
 			providerCommands = map[string]any{
 				"list_models": &openai.ListModels{},
 				"inference":   &openai.ChatCompletions{},
 			}
-		case styles.StyleOpenAIResponses: // OpenAI Responses API
+		case styles.StyleResponses: // OpenAI Responses API
 			providerCommands = map[string]any{
 				"list_models": &openai.ListModels{},
 				"inference":   &openai.Responses{},
@@ -294,14 +294,14 @@ func (m *RouterModule) ResolveProvidersOrderAndModel(model string) (providerName
 	parts := strings.SplitN(actualModelName, "/", 2)
 	if len(parts) == 2 {
 		pName := strings.ToLower(parts[0])
-		actualModelName = parts[1]
 		if _, ok := m.ProviderConfigs[pName]; ok {
+			actualModelName = parts[1]
 			m.Impl.Logger.Debug("Found explicit provider by prefix",
 				zap.String("prefix", pName),
 				zap.String("model", actualModelName))
 			return uniqueProviders(pName, m.ProvidersOrder), actualModelName
 		}
-		m.Impl.Logger.Debug("Prefix found but provider not recognized, checking defaults",
+		m.Impl.Logger.Debug("Prefix found but provider not recognized, skipping and checking defaults",
 			zap.String("prefix", pName),
 			zap.String("requested_model", actualModelName))
 	}
