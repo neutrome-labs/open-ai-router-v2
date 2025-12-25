@@ -44,7 +44,7 @@ func (v *VirtualPlugin) RecursiveHandler(
 	modelName := styles.TryGetFromPartialJSON[string](reqJson, "model")
 
 	// Check if this is targeting our virtual provider
-	// Format: "virtualProvider/modelName"
+	// Format: "virtualProvider/modelName" or "virtualProvider/modelName+plugins"
 	providerPrefix := ""
 	actualModel := modelName
 	if idx := strings.Index(modelName, "/"); idx >= 0 {
@@ -57,19 +57,34 @@ func (v *VirtualPlugin) RecursiveHandler(
 		return false, nil
 	}
 
-	// Look up the target model for this virtual model
-	targetModel, ok := v.ModelMappings[actualModel]
+	// Extract plugin suffix from the model name (e.g., "model+plugin1:arg+plugin2" -> "model", "+plugin1:arg+plugin2")
+	baseModel := actualModel
+	pluginSuffix := ""
+	if plusIdx := strings.IndexByte(actualModel, '+'); plusIdx >= 0 {
+		baseModel = actualModel[:plusIdx]
+		pluginSuffix = actualModel[plusIdx:] // includes the leading '+'
+	}
+
+	// Look up the target model for this virtual model (using base model without plugins)
+	targetModel, ok := v.ModelMappings[baseModel]
 	if !ok || targetModel == "" {
 		return false, nil // Model not in our mappings, let normal flow handle it
 	}
 
+	// Merge plugins: target plugins come first, then user plugins
+	// Example: target="openai/gpt-4+logger", user suffix="+skill:kitty"
+	// Result: "openai/gpt-4+logger+skill:kitty"
+	finalModel := targetModel + pluginSuffix
+
 	Logger.Debug("VirtualPlugin handling request",
 		zap.String("provider", v.ProviderName),
-		zap.String("virtual_model", actualModel),
-		zap.String("target_model", targetModel))
+		zap.String("virtual_model", baseModel),
+		zap.String("user_plugins", pluginSuffix),
+		zap.String("target_model", targetModel),
+		zap.String("final_model", finalModel))
 
-	// Rewrite model in request to the target
-	err = reqJson.Set("model", targetModel)
+	// Rewrite model in request to the target with merged plugins
+	err = reqJson.Set("model", finalModel)
 	if err != nil {
 		return true, err
 	}
