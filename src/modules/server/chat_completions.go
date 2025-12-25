@@ -29,53 +29,6 @@ type ChatCompletionsModule struct {
 	logger     *zap.Logger
 }
 
-// responseCaptureWriter captures response instead of writing to HTTP
-type responseCaptureWriter struct {
-	response []byte
-	headers  http.Header
-}
-
-func (w *responseCaptureWriter) Header() http.Header {
-	if w.headers == nil {
-		w.headers = make(http.Header)
-	}
-	return w.headers
-}
-
-func (w *responseCaptureWriter) Write(data []byte) (int, error) {
-	w.response = data
-	return len(data), nil
-}
-
-func (w *responseCaptureWriter) WriteHeader(statusCode int) {
-	// Ignore for capture
-}
-
-// chatCompletionsInvoker implements plugins.HandlerInvoker for recursive handler calls.
-type chatCompletionsInvoker struct {
-	module *ChatCompletionsModule
-	router *modules.RouterModule
-}
-
-// InvokeHandler invokes the handler with a modified request, writing to the ResponseWriter.
-func (inv *chatCompletionsInvoker) InvokeHandler(w http.ResponseWriter, r *http.Request) error {
-	return inv.module.ServeHTTP(w, r, nil)
-}
-
-// InvokeHandlerCapture invokes the handler and captures the response instead of writing to w.
-func (inv *chatCompletionsInvoker) InvokeHandlerCapture(r *http.Request) (styles.PartialJSON, error) {
-	// Create a response capture writer
-	capture := &responseCaptureWriter{}
-	err := inv.module.ServeHTTP(capture, r, nil)
-	if err != nil {
-		return nil, err
-	}
-	if capture.response == nil {
-		return nil, nil
-	}
-	return styles.ParsePartialJSON(capture.response)
-}
-
 func ParseChatCompletionsModule(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
 	var m ChatCompletionsModule
 	for h.Next() {
@@ -303,10 +256,7 @@ func (m *ChatCompletionsModule) ServeHTTP(w http.ResponseWriter, r *http.Request
 	r = r.WithContext(context.WithValue(r.Context(), plugin.ContextTraceID(), traceId))
 
 	// Create invoker for recursive handler plugins
-	invoker := &chatCompletionsInvoker{
-		module: m,
-		router: router,
-	}
+	invoker := plugin.NewCaddyModuleInvoker(m)
 
 	// Check if any recursive handler plugin wants to handle this request
 	handled, err := chain.RunRecursiveHandlers(invoker, reqJson, w, r)
