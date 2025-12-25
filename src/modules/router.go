@@ -299,7 +299,7 @@ func (m *RouterModule) ResolveProvidersOrderAndModel(model string) (providerName
 			m.Impl.Logger.Debug("Found explicit provider by prefix",
 				zap.String("prefix", pName),
 				zap.String("model", actualModelName))
-			return uniqueProviders(pName, m.ProvidersOrder), actualModelName
+			return []string{pName}, actualModelName
 		}
 		m.Impl.Logger.Debug("Prefix found but provider not recognized, skipping and checking defaults",
 			zap.String("prefix", pName),

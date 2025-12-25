@@ -20,11 +20,6 @@ type Models struct{}
 
 func (m *Models) Name() string { return "models" }
 
-// knownModelField is used to extract/set model from json.RawMessage
-type knownModelField struct {
-	Model string `json:"model"`
-}
-
 // RecursiveHandler implements the fallback logic by trying models in sequence.
 // For each model, all providers are tried (via the handler). Only when all providers
 // fail for a model does it move to the next model in the fallback list.

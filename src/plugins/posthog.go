@@ -189,8 +189,10 @@ func (p *Posthog) fireEvent(provider *services.ProviderService, r *http.Request,
 	// Extract common props
 	props := p.extractCommonProps(provider, r, reqJson, hres, resJson, isStreaming, providerErr)
 
-	// Extract chat completions specific props
-	p.extractChatCompletionsProps(props, reqJson, resJson, isStreaming, ctx)
+	if provider.Style == styles.StyleChatCompletions {
+		// Extract chat completions specific props
+		p.extractChatCompletionsProps(props, reqJson, resJson, isStreaming, ctx)
+	}
 
 	_ = services.FireObservabilityEvent(userId, "", "$ai_generation", props)
 }
