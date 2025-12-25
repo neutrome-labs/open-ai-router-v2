@@ -1,13 +1,7 @@
 package plugin
 
 // Registry holds all available plugins
-var Registry = map[string]Plugin{
-	/*"posthog":  &Posthog{},
-	"models":   &Models{},
-	"parallel": &Parallel{},
-	"fuzz":     &Fuzz{},
-	"stools":   &Stools{},*/
-}
+var Registry = map[string]Plugin{}
 
 // GetPlugin returns a plugin by name
 func GetPlugin(name string) (Plugin, bool) {

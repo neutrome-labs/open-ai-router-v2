@@ -1,4 +1,4 @@
-package plugins
+package flow
 
 import (
 	"io"
@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/neutrome-labs/open-ai-router/src/plugin"
+	"github.com/neutrome-labs/open-ai-router/src/plugins"
 	"github.com/neutrome-labs/open-ai-router/src/styles"
 	"go.uber.org/zap"
 )
@@ -39,19 +40,19 @@ func (m *Models) RecursiveHandler(
 		return false, nil
 	}
 
-	Logger.Debug("models plugin starting fallback chain",
+	plugins.Logger.Debug("models plugin starting fallback chain",
 		zap.Strings("models", models),
 		zap.String("plugin_suffix", pluginSuffix))
 
 	var lastErr error
 	for i, currentModel := range models {
-		Logger.Debug("models plugin trying model (all providers)",
+		plugins.Logger.Debug("models plugin trying model (all providers)",
 			zap.Int("index", i),
 			zap.String("model", currentModel))
 
 		clonedJson, err := reqJson.CloneWith("model", currentModel+pluginSuffix)
 		if err != nil {
-			Logger.Error("models plugin: failed to clone request JSON",
+			plugins.Logger.Error("models plugin: failed to clone request JSON",
 				zap.String("model", currentModel),
 				zap.Error(err))
 			lastErr = err
@@ -73,13 +74,13 @@ func (m *Models) RecursiveHandler(
 		}
 
 		lastErr = err
-		Logger.Debug("models plugin: all providers failed for model, trying next model",
+		plugins.Logger.Debug("models plugin: all providers failed for model, trying next model",
 			zap.String("model", currentModel),
 			zap.Error(err))
 	}
 
 	// All models (and all their providers) failed
-	Logger.Error("models plugin: all models exhausted",
+	plugins.Logger.Error("models plugin: all models exhausted",
 		zap.Strings("models", models),
 		zap.Error(lastErr))
 

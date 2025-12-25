@@ -6,6 +6,7 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/neutrome-labs/open-ai-router/src/plugin"
 	"github.com/neutrome-labs/open-ai-router/src/plugins"
+	"github.com/neutrome-labs/open-ai-router/src/plugins/flow"
 	"github.com/neutrome-labs/open-ai-router/src/services"
 )
 
@@ -15,10 +16,11 @@ func init() {
 	services.TryInstrumentAppObservability()
 
 	plugin.RegisterPlugin("posthog", &plugins.Posthog{})
-	plugin.RegisterPlugin("models", &plugins.Models{})
-	// plugin.RegisterPlugin("parallel", &plugins.Parallel{})
-	plugin.RegisterPlugin("fuzz", &plugins.Fuzz{})
-	// plugin.RegisterPlugin("stools", &plugins.Stools{})
+	plugin.RegisterPlugin("models", &flow.Models{})
+	plugin.RegisterPlugin("parallel", &flow.Parallel{})
+	plugin.RegisterPlugin("fuzz", &flow.Fuzz{})
+	plugin.RegisterPlugin("stools", &plugins.StripTools{})
+	plugin.RegisterPlugin("zip", &plugins.Zip{})
 
 	defer func() {
 		_ = services.FireObservabilityEvent("app", "", "init", map[string]any{
