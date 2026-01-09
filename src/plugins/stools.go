@@ -13,6 +13,10 @@ import (
 // (messages with role "tool") except for the last tool interaction sequence.
 // The idea is that the AI has already summarized previous tool responses and has
 // all required information in the text bodies, so we can reduce token usage.
+//
+// Message structure in OpenAI API:
+// - Assistant makes tool calls: role="assistant" with tool_calls array
+// - Tool results: role="tool" with tool_call_id referencing the call
 type StripTools struct {
 }
 
@@ -31,7 +35,7 @@ func (f *StripTools) Before(params string, p *services.ProviderService, r *http.
 
 	// Find all tool interaction boundaries (sequences of tool_call + tool responses)
 	// A tool interaction starts with an assistant message containing tool_calls
-	// and ends before the next non-tool message or at the end of messages
+	// and ends with the last consecutive tool response message
 
 	type toolInteraction struct {
 		startIdx int // Index of assistant message with tool_calls
@@ -39,25 +43,21 @@ func (f *StripTools) Before(params string, p *services.ProviderService, r *http.
 	}
 
 	var interactions []toolInteraction
-	i := 0
-	for i < len(messages) {
+	for i := 0; i < len(messages); i++ {
 		msg := messages[i]
 
 		// Check if this is an assistant message with tool calls
 		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
 			interaction := toolInteraction{startIdx: i, endIdx: i}
 
-			// Find all subsequent tool response messages
-			j := i + 1
-			for j < len(messages) && messages[j].Role == "tool" {
+			// Find all subsequent tool response messages (role="tool")
+			for j := i + 1; j < len(messages) && messages[j].Role == "tool"; j++ {
 				interaction.endIdx = j
-				j++
 			}
 
 			interactions = append(interactions, interaction)
-			i = j
-		} else {
-			i++
+			// Continue from after the interaction to find more
+			i = interaction.endIdx
 		}
 	}
 
@@ -66,48 +66,39 @@ func (f *StripTools) Before(params string, p *services.ProviderService, r *http.
 		return reqJson, nil
 	}
 
-	// Keep only the last tool interaction, strip all previous ones
-	// Build new messages list excluding all but the last interaction
-	lastInteraction := interactions[len(interactions)-1]
+	// Build set of indices to remove (all interactions except the last one)
 	indicesToRemove := make(map[int]bool)
-
 	for _, interaction := range interactions[:len(interactions)-1] {
 		for idx := interaction.startIdx; idx <= interaction.endIdx; idx++ {
 			indicesToRemove[idx] = true
 		}
 	}
 
-	// Also strip tool_calls from assistant messages that are NOT part of the last interaction
-	// but keep their text content
-	newMessages := make([]styles.ChatCompletionsMessage, 0, len(messages)-len(indicesToRemove))
-
-	for idx, msg := range messages {
-		if indicesToRemove[idx] {
+	// In-place removal: use write index to compact the slice
+	writeIdx := 0
+	for readIdx := 0; readIdx < len(messages); readIdx++ {
+		if indicesToRemove[readIdx] {
+			// For assistant messages being removed, preserve text content if present
+			if messages[readIdx].Role == "assistant" && messages[readIdx].Content != nil {
+				messages[writeIdx] = styles.ChatCompletionsMessage{
+					Role:    messages[readIdx].Role,
+					Name:    messages[readIdx].Name,
+					Content: messages[readIdx].Content,
+				}
+				writeIdx++
+			}
+			// Tool response messages (role="tool") are fully removed
 			continue
 		}
 
-		// For assistant messages with tool_calls that are not part of the last interaction,
-		// strip the tool_calls but keep the message if it has content
-		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
-			isLastInteraction := idx >= lastInteraction.startIdx && idx <= lastInteraction.endIdx
-			if !isLastInteraction {
-				// Strip tool_calls, keep only content
-				if msg.Content != nil {
-					newMessages = append(newMessages, styles.ChatCompletionsMessage{
-						Role:    msg.Role,
-						Name:    msg.Name,
-						Content: msg.Content,
-					})
-				}
-				continue
-			}
+		if writeIdx != readIdx {
+			messages[writeIdx] = messages[readIdx]
 		}
-
-		newMessages = append(newMessages, msg)
+		writeIdx++
 	}
 
-	// Update reqJson with filtered messages
-	return reqJson.CloneWith("messages", newMessages)
+	// Update reqJson with truncated messages
+	return reqJson.CloneWith("messages", messages[:writeIdx])
 }
 
 var (
